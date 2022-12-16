@@ -1,8 +1,6 @@
 # AQT: Adversarial Query Transformers for Domain Adaptive Object Detection
 By Wei-Jie Huang, Yu-Lin Lu, Shih-Yao Lin, Yusheng Xie, and Yen-Yu Lin.
 
-faaaaaaaacc
-
 This repository contains the implementation accompanying our paper [AQT: Adversarial Query Transformers for Domain Adaptive Object Detection](http://vllab.cs.nctu.edu.tw/images/paper/ijcai-huang22.pdf). This work was accepted to [IJCAI-ECAI 2022](https://ijcai-22.org/).
 
 If you find it helpful for your research, please consider citing:
