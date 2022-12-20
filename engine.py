@@ -41,13 +41,25 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
     # for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
     for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):
-        outputs = model(samples)
-        loss_dict = criterion(outputs, targets)
+        
+        outputs = model(samples, targets)
+        # import pdb; pdb.set_trace()
+
+        if type(outputs)==tuple:
+            out, features, memory, hs= outputs
+            loss_dict = criterion(out, targets)
+        else:
+            loss_dict = criterion(outputs, targets)
+        
+
         weight_dict = criterion.weight_dict
         losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
 
+        # import pdb; pdb.set_trace()
+
         # reduce losses over all GPUs for logging purposes
         loss_dict_reduced = utils.reduce_dict(loss_dict)
+
         loss_dict_reduced_unscaled = {f'{k}_unscaled': v
                                       for k, v in loss_dict_reduced.items()}
         loss_dict_reduced_scaled = {k: v * weight_dict[k]
@@ -82,7 +94,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 
 @torch.no_grad()
-def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir):
+def evaluate(model, criterion, postprocessors, postprocessors_target, data_loader, base_ds, device, output_dir):
     model.eval()
     criterion.eval()
 
@@ -106,7 +118,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
-        outputs = model(samples)
+        outputs = model(samples, None)
         loss_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict
 
@@ -123,6 +135,36 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
 
         orig_target_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)
         results = postprocessors['bbox'](outputs, orig_target_sizes)
+
+        # # TODO plot predictions on target data
+        # root = data_loader.dataset.root # PositxPath
+        # img_id = targets[1]['image_id'].item()
+        # img_path = base_ds.loadImgs(img_id)[0]['file_name']
+        # # thresh = 0.6
+        # # pred results
+        # full_path = root/img_path
+
+        # # target gts
+        # label_gt = targets[1]['labels']
+        # prob_gt = torch.ones(label_gt.size())
+        # # import pdb; pdb.set_trace()
+
+        # # normalized boxes, duplicate outputs
+        # boxes_gt = postprocessors_target['bbox'](targets[1], orig_target_sizes)[1]['boxes'] # same labels for targets[0] and targets[1] 
+
+        # keep = torch.arange(boxes_gt.size(0)).numpy()
+        # # keep = prob_pred > thresh
+        
+        # # import pdb; pdb.set_trace()
+        # boxes_pred = results[1]['boxes'][keep]
+        # label_pred = results[1]['labels'][keep]
+        # prob_pred = results[1]['scores'][keep]
+
+        # info_all = {}
+        # info_all['pred'] = [boxes_pred, label_pred, prob_pred]
+        # info_all['gt'] = [boxes_gt, label_gt, prob_gt]
+        # # plot_results(info_all, img_id, full_path)
+        # plot_results_separate(info_all, img_id, full_path)
         if 'segm' in postprocessors.keys():
             target_sizes = torch.stack([t["size"] for t in targets], dim=0)
             results = postprocessors['segm'](results, outputs, orig_target_sizes, target_sizes)
