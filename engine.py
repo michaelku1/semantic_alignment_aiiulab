@@ -22,6 +22,7 @@ import util.misc as utils
 from datasets.coco_eval import CocoEvaluator
 from datasets.panoptic_eval import PanopticEvaluator
 from datasets.data_prefetcher import data_prefetcher
+from util.box_ops import plot_results
 
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
@@ -164,7 +165,7 @@ def evaluate(model, criterion, postprocessors, postprocessors_target, data_loade
         # info_all['pred'] = [boxes_pred, label_pred, prob_pred]
         # info_all['gt'] = [boxes_gt, label_gt, prob_gt]
         # # plot_results(info_all, img_id, full_path)
-        # plot_results_separate(info_all, img_id, full_path)
+
         if 'segm' in postprocessors.keys():
             target_sizes = torch.stack([t["size"] for t in targets], dim=0)
             results = postprocessors['segm'](results, outputs, orig_target_sizes, target_sizes)
