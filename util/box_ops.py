@@ -42,9 +42,9 @@ def plot_results(info, img_id, img_path):
 
     # TODO: this will change depending on the label set defined in the json file (e.g will be indexed differently if
     # using a subset, or a single class)
-    # CLASSES = ['person','car','train','rider','truck','motorcycle','bicycle', 'bus'] # whole set
+    CLASSES = ['person','car','train','rider','truck','motorcycle','bicycle', 'bus'] # whole set
     # CLASSES = ['car', 'rider', 'bus'] # subset
-    CLASSES =  ['bus'] # single class
+#     CLASSES =  ['bus'] # single class
 
     img = Image.open(img_path)
 
