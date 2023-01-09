@@ -22,7 +22,7 @@ class Memory(nn.Module):
         
         # import pdb; pdb.set_trace()
         # update memory
-        source_prototype = (1-self.keep_rate)*self.source_prototype.detach() + self.keep_rate* prototype_source
-        target_prototype = (1-self.keep_rate)*self.target_prototype.detach() + self.keep_rate* prototype_target
+        self.source_prototype = (1-self.keep_rate)*self.source_prototype.detach() + self.keep_rate* prototype_source
+        self.target_prototype = (1-self.keep_rate)*self.target_prototype.detach() + self.keep_rate* prototype_target
 
-        return source_prototype, target_prototype
+        return self.source_prototype, self.target_prototype
