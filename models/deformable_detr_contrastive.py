@@ -784,9 +784,8 @@ class SetCriterion(nn.Module):
         # intra class: only between source and target
         # inter class: between each class --> three combinations
         # max length is self.num_classes
-
-        source = source.view(-1, source.shape[2])
-        target = target.view(-1, target.shape[2])
+#         source = source.view(-1, source.shape[2])
+#         target = target.view(-1, target.shape[2])
 
         intra_loss = 0
         inter_loss = 0
