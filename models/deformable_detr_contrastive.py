@@ -412,10 +412,10 @@ class DeformableDETR(nn.Module):
                     rois_target = weighted_rois_target[i][matched_tgt_idx].unsqueeze(1) # tensor
                     tmp.append(rois_target)
                 target_rois.append(tmp)
-
+            
             # aggregate rois for each class
-            src_prototypes = torch.zeros((B//2, self.num_classes, self.hidden_dim)).cuda()
-            tgt_prototypes = torch.zeros((B//2, self.num_classes, self.hidden_dim)).cuda()
+            src_prototypes = torch.zeros((self.num_classes, self.hidden_dim)).cuda()
+            tgt_prototypes = torch.zeros((self.num_classes, self.hidden_dim)).cuda()
 
             epsilon = 1e-6
             # this is to also index labels (one-to-one)
@@ -428,15 +428,14 @@ class DeformableDETR(nn.Module):
                     aggregate = torch.sum(roi_sample_tmp[j], dim=0)/(torch.sum(list_of_scores[0]) + epsilon)
                     # import pdb; pdb.set_trace()
                     # store prototype at the corresponding cls index position
-                    src_prototypes[i][source_labels[i][j]] = aggregate
+                    src_prototypes[source_labels[i][j]] = aggregate
                     
             for i in range(len(target_rois)):
                 roi_sample_tmp = target_rois[i]
                 for j in range(len(roi_sample_tmp)):
                     # tgt_prototypes.append(torch.sum(target_rois[i], dim=0)/(torch.sum(list_of_scores[1]) + epsilon))
                     aggregate = torch.sum(roi_sample_tmp[j], dim=0)/(torch.sum(list_of_scores[1]) + epsilon)
-                    tgt_prototypes[i][target_labels[i][j]] = aggregate
-
+                    tgt_prototypes[target_labels[i][j]] = aggregate
             
             if self.ema:
                 #memory monitoring
