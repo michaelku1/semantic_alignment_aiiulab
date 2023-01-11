@@ -27,7 +27,7 @@ from util.box_ops import plot_results
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
-                    device: torch.device, epoch: int, max_norm: float = 0):
+                    device: torch.device, epoch: int, total_epoch:int, cur_iter: int, max_norm: float = 0):
     model.train()
     criterion.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -39,36 +39,52 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
     prefetcher = data_prefetcher(data_loader, device, prefetch=True)
     samples, targets = prefetcher.next()
+    
+    data_loader_len = len(data_loader)
+    total_iter = data_loader_len*total_epoch
 
     # for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
-    for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):
+    for iter in metric_logger.log_every(range(data_loader_len), print_freq, header):
         
-        outputs = model(samples, targets)
+        # import pdb; pdb.set_trace()
+        cur_iter += iter # update iter
+        # pass current iter num
+        outputs = model(samples, targets, cur_iter, total_iter)
         # import pdb; pdb.set_trace()
 
+        # TODO debug mode
         if type(outputs)==tuple:
             out, features, memory, hs= outputs
-            loss_dict = criterion(out, targets)
+            # import pdb; pdb.set_trace()
+            loss_dict_n_indices = criterion(out, targets)
+            loss_dict, returned_indices = loss_dict_n_indices
+            
         else:
             loss_dict = criterion(outputs, targets)
         
-
         weight_dict = criterion.weight_dict
+
+        # the loss used for optimization
         losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
 
         # import pdb; pdb.set_trace()
 
-        # reduce losses over all GPUs for logging purposes
+        # reduce losses over all GPUs for logging purposes (loss_dict_reduced is scaled)
         loss_dict_reduced = utils.reduce_dict(loss_dict)
 
+        # store unscaled losses
         loss_dict_reduced_unscaled = {f'{k}_unscaled': v
                                       for k, v in loss_dict_reduced.items()}
+
+        # store scaled losses
         loss_dict_reduced_scaled = {k: v * weight_dict[k]
                                     for k, v in loss_dict_reduced.items() if k in weight_dict}
-        losses_reduced_scaled = sum(loss_dict_reduced_scaled.values())
 
+        # get total loss
+        losses_reduced_scaled = sum(loss_dict_reduced_scaled.values())
         loss_value = losses_reduced_scaled.item()
 
+        # check if total loss is inf
         if not math.isfinite(loss_value):
             print("Loss is {}, stopping training".format(loss_value))
             print(loss_dict_reduced)
@@ -88,10 +104,13 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         metric_logger.update(grad_norm=grad_total_norm)
 
         samples, targets = prefetcher.next()
+    
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+
+    # TODO at the end of each epoch, return the updated cur_iter
+    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, cur_iter
 
 
 @torch.no_grad()
@@ -106,6 +125,8 @@ def evaluate(model, criterion, postprocessors, postprocessors_target, data_loade
     iou_types = tuple(k for k in ('segm', 'bbox') if k in postprocessors.keys())
     coco_evaluator = CocoEvaluator(base_ds, iou_types)
     # coco_evaluator.coco_eval[iou_types[0]].params.iouThrs = [0, 0.1, 0.5, 0.75]
+    
+    # import pdb; pdb.set_trace()
 
     panoptic_evaluator = None
     if 'panoptic' in postprocessors.keys():
@@ -119,7 +140,7 @@ def evaluate(model, criterion, postprocessors, postprocessors_target, data_loade
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
-        outputs = model(samples, None)
+        outputs = model(samples, None, None, None)
         loss_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict
 
@@ -135,11 +156,17 @@ def evaluate(model, criterion, postprocessors, postprocessors_target, data_loade
         metric_logger.update(class_error=loss_dict_reduced['class_error'])
 
         orig_target_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)
+
+        # outputs: dict storing 300 predictions
+        # list storing scores, labels, and boxes (100)
+        # postprocess into format accepted by coco api
         results = postprocessors['bbox'](outputs, orig_target_sizes)
 
-        # # TODO plot predictions on target data
-        # root = data_loader.dataset.root # PositxPath
-        # img_id = targets[1]['image_id'].item()
+        # TODO plot predictions on target data
+        root = data_loader.dataset.root # PositxPath
+
+        # # import pdb; pdb.set_trace()
+        # img_id = targets[1]['image_id'].item() # BUG index error
         # img_path = base_ds.loadImgs(img_id)[0]['file_name']
         # # thresh = 0.6
         # # pred results
@@ -164,12 +191,19 @@ def evaluate(model, criterion, postprocessors, postprocessors_target, data_loade
         # info_all = {}
         # info_all['pred'] = [boxes_pred, label_pred, prob_pred]
         # info_all['gt'] = [boxes_gt, label_gt, prob_gt]
-        # # plot_results(info_all, img_id, full_path)
+        # # TODO plot both grountruth and predicted boxes
+        # plot_results(info_all, img_id, full_path)
 
         if 'segm' in postprocessors.keys():
             target_sizes = torch.stack([t["size"] for t in targets], dim=0)
             results = postprocessors['segm'](results, outputs, orig_target_sizes, target_sizes)
+        
+        # dict storing scores, labels and boxes (100 predictions) from bs target images
+        # keys store key ids 
+        # scores are ranked
         res = {target['image_id'].item(): output for target, output in zip(targets, results)}
+
+        # import pdb; pdb.set_trace()
         if coco_evaluator is not None:
             coco_evaluator.update(res)
 
