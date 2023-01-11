@@ -90,6 +90,11 @@ def main(cfg):
 
     dataset_train = build_dataset(image_set='train', cfg=cfg)
     dataset_val = build_dataset(image_set='val', cfg=cfg)
+    
+    # import pdb; pdb.set_trace()
+    
+    # TODO sample subset for validation
+    # indices = torch.randperm(len(dataset_val))[:200]
 
     if cfg.DIST.DISTRIBUTED:
         if cfg.CACHE_MODE:
@@ -202,16 +207,17 @@ def main(cfg):
                 lr_scheduler.base_lrs = list(map(lambda group: group['initial_lr'], optimizer.param_groups))
             lr_scheduler.step(lr_scheduler.last_epoch)
             START_EPOCH = checkpoint['epoch'] + 1
+
+        # TODO: safely commented out for now
         # check the resumed model
-        if not cfg.EVAL:
-            test_stats, coco_evaluator = evaluate(
-                model, criterion, postprocessors, postprocessors_target, data_loader_val, base_ds, device, cfg.OUTPUT_DIR
-            )
+        # if not cfg.EVAL:
+        #     test_stats, coco_evaluator = evaluate(
+        #         model, criterion, postprocessors, postprocessors_target, data_loader_val, base_ds, device, cfg.OUTPUT_DIR
+        #     )
 
     # TODO: for retraining
     elif cfg.FINETUNE:
         START_EPOCH = checkpoint['epoch'] + 1
-
 
     if cfg.EVAL:
         test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,postprocessors_target,
@@ -229,11 +235,19 @@ def main(cfg):
 
     print("Start training")
     start_time = time.time()
-    for epoch in range(cfg.START_EPOCH, cfg.TRAIN.EPOCHS):
+
+    total_iter = 0 # TODO count total iterations, starting point
+    for epoch in range(START_EPOCH, cfg.TRAIN.EPOCHS):
         if cfg.DIST.DISTRIBUTED:
             sampler_train.set_epoch(epoch)
-        train_stats = train_one_epoch(
-            model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.CLIP_MAX_NORM)
+        
+        train_stats, cur_iter = train_one_epoch(
+            model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS, total_iter, cfg.TRAIN.CLIP_MAX_NORM)
+        
+        total_iter = cur_iter # TODO update total_iter after each training epoch
+        
+        # train_stats = train_one_epoch(
+        #     model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.CLIP_MAX_NORM)
         lr_scheduler.step()
         if cfg.OUTPUT_DIR:
             checkpoint_paths = [output_dir / 'checkpoint.pth']
