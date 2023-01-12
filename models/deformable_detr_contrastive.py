@@ -18,6 +18,7 @@ from torch import nn
 import math
 import cv2 as cv
 import tracemalloc
+import gc
 
 import torchvision
 
@@ -285,6 +286,9 @@ class DeformableDETR(nn.Module):
             assert B == memory.shape[0]
 
             last_layer_out = outputs_class[-1] # bs is after layer num
+
+
+            ### BUG should we use MLP outputs or last layer softmax outputs
             outputs_class_conf = F.softmax(last_layer_out, -1) # (2, 300, 9)
 
             # increases linearly
@@ -342,8 +346,6 @@ class DeformableDETR(nn.Module):
             #     list_of_rois.append(features)
             #     list_of_scores.append(scores)
             #     list_of_labels.append(labels)
-
-            # # import pdb; pdb.set_trace()
 
             # src_prototypes, tgt_prototypes = weighted_aggregate(B, list_of_labels, list_of_rois, list_of_scores, self.num_classes, self.hidden_dim)
 
@@ -452,8 +454,6 @@ class DeformableDETR(nn.Module):
         # store predictions in dictionary
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
 
-        # TEST:
-        # updated_tgt_prototypes = torch.zeros((B//2, self.num_classes, self.hidden_dim)).cuda()
 
         # TODO add prototypes to outputs
         if self.training:
@@ -477,13 +477,13 @@ class DeformableDETR(nn.Module):
             out['features_source'] = list_of_rois[:B//2] # list of tensors
             out['y_s'] = list_of_scores[:B//2] # list of tensors
             out['fc'] = self.class_embed
+            out['source_labels'] = list_of_labels[:B//2] # for computing cross entropy loss
             target_features = list_of_rois[B//2:]
-            target_labels = list_of_labels[B//2:]
+            target_labels = list_of_labels[B//2:] # for computing CV
             target_mean = updated_tgt_prototypes - updated_src_prototypes
-            out['covariance_target'] = compute_CV(target_features, target_labels, target_mean, self.num_classes)
-            import pdb; pdb.set_trace()
 
-            fc, covariance_target
+            # import pdb; pdb.set_trace()
+            out['covariance_target'] = compute_CV(target_features, target_labels, target_mean, self.num_classes)
 
         if self.debug:
             return out, features, memory, hs
@@ -589,7 +589,7 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
-    def __init__(self, num_classes, matcher, weight_dict, losses, focal_alpha=0.25, da_gamma=2, return_indices=False, margin = 1, feat_aug=False, Lamda=0.25):
+    def __init__(self, num_classes, matcher, weight_dict, losses, focal_alpha=0.25, da_gamma=2, return_indices=False, margin = 1, feat_aug=False, Lamda=0.25, eos_coef=0.1):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -610,21 +610,31 @@ class SetCriterion(nn.Module):
         self.cross_entropy = nn.CrossEntropyLoss()
         self.feat_aug = feat_aug
         self.Lamda = Lamda
+        self.eos_coef = eos_coef
 
+        # TODO original detr implementation
+        empty_weight = torch.ones(self.num_classes) # original implementation is torch.ones(self.num_classes +1) but not sure why
+        empty_weight[0] = self.eos_coef
+        self.register_buffer('empty_weight', empty_weight)
 
     def aug(self, s_mean_matrix, t_mean_matrix, fc, features, y_s, labels_s, t_cv_matrix, Lambda):
         # y_s is source prediction
         # labels_s is source labels
         # features are source features
 
+        y_s =torch.cat(y_s, 0)
+        features =torch.cat(features, 0) # (num_of_rois, feat_dim)
+        labels_s = torch.as_tensor(labels_s).view(-1).cuda() # (b, num_of_labels)
+
         N = features.size(0)
-        C = self.class_num
+        C = self.num_classes
         A = features.size(1)
 
         weight_m = list(fc.parameters())[0]
         NxW_ij = weight_m.expand(N, C, A)
         NxW_kj = torch.gather(NxW_ij, 1, labels_s.view(N, 1, 1).expand(N, C, A))
         
+        # import pdb; pdb.set_trace()
         # target covariance matrix
         t_CV_temp = t_cv_matrix[labels_s]
 
@@ -646,10 +656,10 @@ class SetCriterion(nn.Module):
         # the denominator term
         aug_result = y_s + 0.5 * sigma2 + Lambda * datW_x_detaMean_NxC
 
-        return aug_result
+        return aug_result # (num_src_labels, class_num)
 
-
-    def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
+    # deformable detr
+    def loss_labels_bce(self, outputs, targets, indices, num_boxes, log=True):
         """Classification loss (NLL)
         targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
         """
@@ -666,11 +676,12 @@ class SetCriterion(nn.Module):
         # elements will be used for scattering the one hot vectors later on
         # target_classes_o = torch.ones_like(target_classes_o)
 
+
+        # TODO set bg label to 0 instead of 9
         target_classes = torch.full(src_logits.shape[:2], self.num_classes,
                                     dtype=torch.int64, device=src_logits.device) # (1, 300)
 
-        target_classes[idx] = target_classes_o # become ones
-
+        target_classes[idx] = target_classes_o # fill with true labels
 
         # (1, 300, 10)
         target_classes_onehot = torch.zeros([src_logits.shape[0], src_logits.shape[1], src_logits.shape[2] + 1],
@@ -678,8 +689,9 @@ class SetCriterion(nn.Module):
 
         
         target_classes_onehot.scatter_(2, target_classes.unsqueeze(-1), 1) # (dim, index, src tensor)
-
+        
         # (1, 300, 9)
+        # import pdb; pdb.set_trace()
         target_classes_onehot = target_classes_onehot[:,:,:-1]
 
         loss_ce = sigmoid_focal_loss(src_logits, target_classes_onehot, num_boxes, alpha=self.focal_alpha, gamma=2) * src_logits.shape[1]
@@ -690,6 +702,33 @@ class SetCriterion(nn.Module):
             losses['class_error'] = 100 - accuracy(src_logits[idx], target_classes_o)[0]
         return losses
 
+    # detr
+    def loss_labels_ce(self, outputs, targets, indices, num_boxes, log=True):
+        """Classification loss (NLL)
+        targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
+        """
+        assert 'pred_logits' in outputs
+        src_logits = outputs['pred_logits']
+
+        idx = self._get_src_permutation_idx(indices)
+        target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
+
+        # set background index to 0
+        target_classes = torch.full(src_logits.shape[:2], 0,
+                                    dtype=torch.int64, device=src_logits.device)
+
+        target_classes[idx] = target_classes_o
+
+        # import pdb; pdb.set_trace()
+        loss_ce = F.cross_entropy(src_logits, target_classes, self.empty_weight)
+        losses = {'loss_ce': loss_ce}
+
+        if log:
+            # TODO this should probably be a separate loss, not hacked in this one here
+            losses['class_error'] = 100 - accuracy(src_logits[idx], target_classes_o)[0]
+        return losses
+
+    
     @torch.no_grad()
     def loss_cardinality(self, outputs, targets, indices, num_boxes):
         """ Compute the cardinality error, ie the absolute error in the number of predicted non-empty boxes
@@ -759,44 +798,11 @@ class SetCriterion(nn.Module):
 
     # TODO: entropy minimization for target only
     def loss_entropy(self, outputs, targets, indices, num_boxes):
-        assert 'pred_logits' in outputs
-        tgt_logits = outputs['pred_logits'] # (1, 300, 9)
-
-        idx = self._get_src_permutation_idx(indices) # (tensor([0, 0]), tensor([175, 186]))
-
-        # import pdb; pdb.set_trace()
-
-        target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)]) # e.g tensor([3, 3])
-
-        # TODO for single class, need to convert target_classes_o to ones since the target_classes_o
-        # elements will be used for scattering the one hot vectors later on
-        # target_classes_o = torch.ones_like(target_classes_o)
-
-        target_classes = torch.full(tgt_logits.shape[:2], self.num_classes,
-                                    dtype=torch.int64, device=tgt_logits.device) # (1, 300)
-
-        target_classes[idx] = target_classes_o # become ones
-
-
-        # (1, 300, 10)
-        target_classes_onehot = torch.zeros([src_logits.shape[0], src_logits.shape[1], src_logits.shape[2] + 1],
-                                            dtype=src_logits.dtype, layout=src_logits.layout, device=src_logits.device)
-
-        
-        target_classes_onehot.scatter_(2, target_classes.unsqueeze(-1), 1) # (dim, index, src tensor)
-
-        # (1, 300, 9)
-        target_classes_onehot = target_classes_onehot[:,:,:-1]
-
-        loss_ce = sigmoid_focal_loss(src_logits, target_classes_onehot, num_boxes, alpha=self.focal_alpha, gamma=2) * src_logits.shape[1]
-        losses = {'loss_ce': loss_ce}
-
-        return losses
+        raise NotImplementedError
 
     def loss_da(self, outputs, use_focal=False):
         B = outputs.shape[0]
         assert B % 2 == 0
-
         
         targets = torch.empty_like(outputs)
         targets[:B//2] = 0
@@ -824,13 +830,15 @@ class SetCriterion(nn.Module):
         tgt_idx = torch.cat([tgt for (_, tgt) in indices])
         return batch_idx, tgt_idx
 
+    # TODO change loss_labels here
     def get_loss(self, loss, outputs, targets, indices, num_boxes, **kwargs):
         loss_map = {
-            'labels': self.loss_labels,
+            'labels': self.loss_labels_bce,
             'cardinality': self.loss_cardinality,
             'boxes': self.loss_boxes,
             'masks': self.loss_masks
         }
+
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
 
@@ -978,9 +986,13 @@ class SetCriterion(nn.Module):
             losses[f'loss_intra'] = intra_loss
             losses[f'inter_loss'] = inter_loss
 
+        # TODO aug loss here is used in place of ce loss computed here
         if self.feat_aug:
-            aug_y = self.aug(mean_source, mean_target, fc, features_source, y_s, labels_source, covariance_target, self.Lamda)
-            loss = self.cross_entropy(aug_y, labels_source)
+            mean_source = outputs['prototypes']['src_prototypes']
+            mean_target = outputs['prototypes']['tgt_prototypes']
+            aug_y = self.aug(mean_source, mean_target, outputs['fc'], outputs['features_source'], outputs['y_s'], outputs['source_labels'], outputs['covariance_target'], self.Lamda)
+            loss = self.cross_entropy(aug_y, torch.as_tensor(outputs['source_labels']))
+            losses[f'aug_loss'] = loss
 
         # for debugging
         if self.return_indices:
@@ -1104,7 +1116,12 @@ def build(cfg):
         model = DETRsegm(model, freeze_detr=(cfg.MODEL.FROZEN_WEIGHTS is not None))
     
     matcher = build_matcher(cfg)
+
     weight_dict = {'loss_ce': cfg.LOSS.CLS_LOSS_COEF, 'loss_bbox': cfg.LOSS.BBOX_LOSS_COEF}
+    
+    # TODO aug loss is equivalent to the cross entropy loss here, but since we compute aug loss at the end,
+    # we also want to put the weighting at the end
+    # weight_dict = {'loss_bbox': cfg.LOSS.BBOX_LOSS_COEF}
     weight_dict['loss_giou'] = cfg.LOSS.GIOU_LOSS_COEF
     
     if cfg.MODEL.MASKS:
@@ -1125,7 +1142,13 @@ def build(cfg):
     weight_dict['loss_inter_class'] = cfg.LOSS.INTER_CLASS_COEF
     weight_dict['loss_intra_class'] = cfg.LOSS.INTRA_CLASS_COEF
 
+    # put ce/aug loss at the end due to order of compute
+    # weight_dict['loss_aug'] = cfg.LOSS.AUG_LOSS_COEF
+
+    # TODO: remove labels for now since we already got aug loss
     losses = ['labels', 'boxes', 'cardinality']
+    # losses = ['boxes', 'cardinality']
+
     if cfg.MODEL.MASKS:
         losses += ["masks"]
     # num_classes, matcher, weight_dict, losses, focal_alpha=0.25
@@ -1135,7 +1158,7 @@ def build(cfg):
         criterion = SetCriterion(cfg.DATASET.NUM_CLASSES, matcher, weight_dict, losses, focal_alpha=cfg.LOSS.FOCAL_ALPHA, da_gamma=cfg.LOSS.DA_GAMMA, return_indices=True, margin = cfg.LOSS.MARGIN)
 
     else:
-        criterion = SetCriterion(cfg.DATASET.NUM_CLASSES, matcher, weight_dict, losses, focal_alpha=cfg.LOSS.FOCAL_ALPHA, da_gamma=cfg.LOSS.DA_GAMMA, return_indices=False, margin = cfg.LOSS.MARGIN, feat_aug=cfg.FEAT_AUG, Lamda=cfg.LOSS.LAMDA)
+        criterion = SetCriterion(cfg.DATASET.NUM_CLASSES, matcher, weight_dict, losses, focal_alpha=cfg.LOSS.FOCAL_ALPHA, da_gamma=cfg.LOSS.DA_GAMMA, return_indices=False, margin = cfg.LOSS.MARGIN, feat_aug=cfg.FEAT_AUG, Lamda=cfg.LOSS.LAMDA, eos_coef=cfg.LOSS.EOS_COEF)
     
     criterion.to(device)
     postprocessors = {'bbox': PostProcess()}
