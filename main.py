@@ -138,22 +138,81 @@ def main(cfg):
     for n, p in model_without_ddp.named_parameters():
         print(n)
 
-    param_dicts = [
-        {
-            "params":
-                [p for n, p in model_without_ddp.named_parameters()
-                 if not match_name_keywords(n, cfg.TRAIN.LR_BACKBONE_NAMES) and not match_name_keywords(n, cfg.TRAIN.LR_LINEAR_PROJ_NAMES) and p.requires_grad],
-            "lr": cfg.TRAIN.LR,
-        },
-        {
-            "params": [p for n, p in model_without_ddp.named_parameters() if match_name_keywords(n, cfg.TRAIN.LR_BACKBONE_NAMES) and p.requires_grad],
-            "lr": cfg.TRAIN.LR_BACKBONE,
-        },
-        {
-            "params": [p for n, p in model_without_ddp.named_parameters() if match_name_keywords(n, cfg.TRAIN.LR_LINEAR_PROJ_NAMES) and p.requires_grad],
-            "lr": cfg.TRAIN.LR * cfg.TRAIN.LR_LINEAR_PROJ_MULT,
-        }
-    ]
+
+    if cfg.MODEL.STAGE == 'train_AQT':
+        param_dicts = [
+            {
+                "params":
+                    [p for n, p in model_without_ddp.named_parameters()
+                    if not match_name_keywords(n, cfg.TRAIN.LR_BACKBONE_NAMES) and not match_name_keywords(n, cfg.TRAIN.LR_LINEAR_PROJ_NAMES) and p.requires_grad],
+                "lr": cfg.TRAIN.LR,
+            },
+            {
+                "params": [p for n, p in model_without_ddp.named_parameters() if match_name_keywords(n, cfg.TRAIN.LR_BACKBONE_NAMES) and p.requires_grad],
+                "lr": cfg.TRAIN.LR_BACKBONE,
+            },
+            {
+                "params": [p for n, p in model_without_ddp.named_parameters() if match_name_keywords(n, cfg.TRAIN.LR_LINEAR_PROJ_NAMES) and p.requires_grad],
+                "lr": cfg.TRAIN.LR * cfg.TRAIN.LR_LINEAR_PROJ_MULT,
+            }
+        ]
+
+    # TODO freeze decoder
+    elif cfg.MODEL.STAGE == 'train_encoder':
+        for n, p in model_without_ddp.named_parameters():
+            if match_name_keywords(n, ['decoder']):
+                p.requires_grad_(False)
+                
+        # TODO everything else kept the same
+        param_dicts = [
+            {
+                "params":
+                    [p for n, p in model_without_ddp.named_parameters()
+                    if not match_name_keywords(n, cfg.TRAIN.LR_BACKBONE_NAMES) and not match_name_keywords(n, cfg.TRAIN.LR_LINEAR_PROJ_NAMES) and p.requires_grad],
+                "lr": cfg.TRAIN.LR,
+            },
+            {
+                "params": [p for n, p in model_without_ddp.named_parameters() if match_name_keywords(n, cfg.TRAIN.LR_BACKBONE_NAMES) and p.requires_grad],
+                "lr": cfg.TRAIN.LR_BACKBONE,
+            },
+            {
+                "params": [p for n, p in model_without_ddp.named_parameters() if match_name_keywords(n, cfg.TRAIN.LR_LINEAR_PROJ_NAMES) and p.requires_grad],
+                "lr": cfg.TRAIN.LR * cfg.TRAIN.LR_LINEAR_PROJ_MULT,
+            }
+        ]
+
+            # if match_name_keywords(n, ['backbone']):
+            #     p.requires_grad_(False)
+
+            # TODO freeze domain classifier while retraining
+            # if match_name_keywords(n, ['space_D']) or match_name_keywords(n, ['instance_D']) or match_name_keywords(n, ['channel_D']):
+            #     p.requires_grad_(False)
+
+    elif cfg.MODEL.STAGE == 'train_decoder':
+        for n, p in model_without_ddp.named_parameters():
+            if match_name_keywords(n, ['encoder']):
+                p.requires_grad_(False)
+
+        param_dicts = [
+            {
+                "params":
+                    [p for n, p in model_without_ddp.named_parameters()
+                    if not match_name_keywords(n, cfg.TRAIN.LR_BACKBONE_NAMES) and not match_name_keywords(n, cfg.TRAIN.LR_LINEAR_PROJ_NAMES) and p.requires_grad],
+                "lr": cfg.TRAIN.LR,
+            },
+            {
+                "params": [p for n, p in model_without_ddp.named_parameters() if match_name_keywords(n, cfg.TRAIN.LR_BACKBONE_NAMES) and p.requires_grad],
+                "lr": cfg.TRAIN.LR_BACKBONE,
+            },
+            {
+                "params": [p for n, p in model_without_ddp.named_parameters() if match_name_keywords(n, cfg.TRAIN.LR_LINEAR_PROJ_NAMES) and p.requires_grad],
+                "lr": cfg.TRAIN.LR * cfg.TRAIN.LR_LINEAR_PROJ_MULT,
+            }
+        ]
+
+    else:
+        raise ValueError('please specify training mode')
+
     if cfg.TRAIN.SGD:
         optimizer = torch.optim.SGD(param_dicts, lr=cfg.TRAIN.LR, momentum=0.9,
                                     weight_decay=cfg.TRAIN.WEIGHT_DECAY)
