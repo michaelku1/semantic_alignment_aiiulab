@@ -10,13 +10,7 @@
 # ------------------------------------------------------------------------
 
 # from .deformable_detr import build
-
 from .deformable_detr_contrastive import build
 
 def build_model(cfg):
     return build(cfg)
-
-
-def build_model(cfg):
-    return build(cfg)
-
