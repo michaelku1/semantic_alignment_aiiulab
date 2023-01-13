@@ -10,23 +10,24 @@
 # ------------------------------------------------------------------------
 
 import copy
-from typing import Optional, List
 import math
 
 import torch
 import torch.nn.functional as F
-from torch import nn, Tensor
-from torch.nn.init import xavier_uniform_, constant_, uniform_, normal_
+from torch import nn
+from torch.nn.init import xavier_uniform_, constant_, normal_
+from torch.utils.checkpoint import checkpoint
 
 from util.misc import inverse_sigmoid
 from models.ops.modules import MSDeformAttn
 from models.utils import DomainAttention, GradientReversal, remove_mask_and_warp
 
+
 class DeformableTransformer(nn.Module):
     def __init__(self, d_model=256, nhead=8,
                  num_encoder_layers=6, num_decoder_layers=6, dim_feedforward=1024, dropout=0.1,
                  activation="relu", return_intermediate_dec=False,
-                 num_feature_levels=4, dec_n_points=4,  enc_n_points=4,
+                 num_feature_levels=4, dec_n_points=4, enc_n_points=4,
                  two_stage=False, two_stage_num_proposals=300,
                  space_align=False, channel_align=False, instance_align=False):
         super().__init__()
@@ -84,6 +85,7 @@ class DeformableTransformer(nn.Module):
             constant_(self.reference_points.bias.data, 0.)
         normal_(self.level_embed)
 
+    # we don't need this (two stage)
     def get_proposal_pos_embed(self, proposals):
         num_pos_feats = 128
         temperature = 10000
@@ -99,6 +101,7 @@ class DeformableTransformer(nn.Module):
         pos = torch.stack((pos[:, :, :, 0::2].sin(), pos[:, :, :, 1::2].cos()), dim=4).flatten(2)
         return pos
 
+    # we don't need this (two stage)
     def gen_encoder_output_proposals(self, memory, memory_padding_mask, spatial_shapes):
         N_, S_, C_ = memory.shape
         base_scale = 4.0
@@ -271,7 +274,9 @@ class DeformableTransformerEncoderLayer(nn.Module):
 
     def forward(self, src, space_query, channel_query, pos, reference_points, spatial_shapes, level_start_index, padding_mask=None):
         # self attention
-        src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
+        # src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
+        src2 = self.self_attn_ck(src, pos, reference_points, spatial_shapes, level_start_index, padding_mask)
+
         src = src + self.dropout1(src2)
         src = self.norm1(src)
 
@@ -281,15 +286,36 @@ class DeformableTransformerEncoderLayer(nn.Module):
             if self.channel_align:
                 src_warped, pos_warped = remove_mask_and_warp(src, pos, padding_mask, level_start_index, spatial_shapes)
                 channel_query = self.channel_attn(
-                    channel_query, # bsz * num_feature_levels, 1, H*W
-                    src_warped.flatten(0, 1).transpose(1, 2), # bsz * num_feature_levels, C, H*W
+                    channel_query,  # bsz * num_feature_levels, 1, H*W
+                    src_warped.flatten(0, 1).transpose(1, 2),  # bsz * num_feature_levels, C, H*W
                     pos_warped.flatten(0, 1).transpose(1, 2)
                 )
 
         # ffn
-        src = self.forward_ffn(src)
+        # src = self.forward_ffn(src)
+        src = self.forward_ffn_ck(src)
 
         return src, space_query, channel_query
+
+    def self_attn_ck(self, src, pos, reference_points, spatial_shapes, level_start_index, padding_mask):
+        def _self_attn(src, pos, reference_points, spatial_shapes, level_start_index, padding_mask):
+            return self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
+        return checkpoint(_self_attn, src, pos, reference_points, spatial_shapes, level_start_index, padding_mask)
+
+    def forward_ffn_ck(self, src):
+        def project_1(src):
+            return self.linear1(src)
+
+        def project_2(src):
+            return self.linear2(src)
+
+        src2 = checkpoint(project_1, src) if src.requires_grad else project_1(src)
+        src2 = self.dropout2(self.activation(src2))
+        src2 = checkpoint(project_2, src2) if src2.requires_grad else project_2(src2)
+        src = src + self.dropout3(src2)
+        src = self.norm2(src)
+
+        return src
 
 
 class DeformableTransformerEncoder(nn.Module):
@@ -385,9 +411,25 @@ class DeformableTransformerDecoderLayer(nn.Module):
             instance_query = self.instance_attn(instance_query, tgt, query_pos)
 
         # ffn
-        tgt = self.forward_ffn(tgt)
+        # tgt = self.forward_ffn(tgt)
+        tgt = self.forward_ffn_ck(tgt)
 
         return tgt, instance_query
+
+    def forward_ffn_ck(self, tgt):
+        def project_1(tgt):
+            return self.linear1(tgt)
+
+        def project_2(tgt):
+            return self.linear2(tgt)
+
+        tgt2 = checkpoint(project_1, tgt) if tgt.requires_grad else project_1(tgt)
+        tgt2 = self.dropout3(self.activation(tgt2))
+        tgt2 = checkpoint(project_2, tgt2) if tgt2.requires_grad else project_2(tgt2)
+        tgt = tgt + self.dropout4(tgt2)
+        tgt = self.norm3(tgt)
+
+        return tgt
 
 
 class DeformableTransformerDecoder(nn.Module):

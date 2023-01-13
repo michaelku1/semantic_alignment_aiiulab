@@ -1,11 +1,6 @@
 import torch
-import torch.autograd as ag
 import torch.nn as nn
-import torch.nn.functional as F
-import numpy as np
-import math
-import functools
-import random
+
 
 class Memory(nn.Module):
     def __init__(self, num_classes, key_dim, keep_rate=0.9):
@@ -13,16 +8,13 @@ class Memory(nn.Module):
         # self.memory_size = memory_size
         self.key_dim = key_dim
         self.keep_rate = keep_rate
-        self.source_prototype = torch.zeros(num_classes, key_dim).cuda()
+        self.source_prototype = torch.zeros(num_classes, key_dim).cuda()  # 1 for each class
         self.target_prototype = torch.zeros(num_classes, key_dim).cuda()
         # self.class_counts = torch.ones((num_classes)).cuda() # fix category temporarily
 
-    @torch.no_grad()
     def forward(self, prototype_source, prototype_target):
-        
-        # import pdb; pdb.set_trace()
         # update memory
-        source_prototype = (1-self.keep_rate)*self.source_prototype.detach() + self.keep_rate* prototype_source
-        target_prototype = (1-self.keep_rate)*self.target_prototype.detach() + self.keep_rate* prototype_target
+        self.source_prototype = (1 - self.keep_rate) * self.source_prototype.detach() + self.keep_rate * prototype_source
+        self.target_prototype = (1 - self.keep_rate) * self.target_prototype.detach() + self.keep_rate * prototype_target
 
-        return source_prototype, target_prototype
+        return self.source_prototype, self.target_prototype
