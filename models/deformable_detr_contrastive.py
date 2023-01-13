@@ -446,7 +446,8 @@ class DeformableDETR(nn.Module):
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
 
         if self.training:
-            out['prototypes'] = {'src_prototypes': updated_src_prototypes, 'tgt_prototypes': updated_tgt_prototypes}
+            if cfg.CONTRASTIVE:
+                out['prototypes'] = {'src_prototypes': updated_src_prototypes, 'tgt_prototypes': updated_tgt_prototypes}
 
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
@@ -728,7 +729,7 @@ class SetCriterion(nn.Module):
         output = torch.pow(src_feat - tgt_feat, 2.0).mean()
         return output
     
-    # TODO in this implementation, the intra class loss between samples is not considered
+    # TODO: in this implementation, the intra class loss between samples is not considered
     def contrastive_loss(self, source, target, margin=1):
         # source and target are tensors
 
@@ -980,7 +981,8 @@ def build(cfg):
         space_align=cfg.MODEL.SPACE_ALIGN,
         channel_align=cfg.MODEL.CHANNEL_ALIGN,
         instance_align=cfg.MODEL.INSTANCE_ALIGN,
-        debug=cfg.DEBUG,
+        # debug=cfg.DEBUG,
+        debug=False,
         ema=cfg.EMA,
     )
     if cfg.MODEL.MASKS:

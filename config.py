@@ -121,6 +121,10 @@ _C.EVAL = False
 _C.NUM_WORKERS = 2
 _C.CACHE_MODE = False # whether to cache images on memory
 
+_C.CONTRASTIVE = False  # NOTE: for contrastive
+_C.EMA = False  # NOTE: for contrastive
+_C.DEBUG = False  # NOTE: for contrastive
+
 
 def get_cfg_defaults():
   """Get a yacs CfgNode object with default values for my_project."""

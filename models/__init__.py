@@ -9,8 +9,16 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 # ------------------------------------------------------------------------
 
-# from .deformable_detr import build
-from .deformable_detr_contrastive import build
+from .deformable_detr import build
+from .deformable_detr_contrastive import build as build_contrastive
+
 
 def build_model(cfg):
+    if cfg.CONTRASTIVE:
+        print()
+        print('*' * 10)
+        print('* Build model for contrastive!!!')
+        print('*' * 10)
+        return build_contrastive(cfg)
+
     return build(cfg)

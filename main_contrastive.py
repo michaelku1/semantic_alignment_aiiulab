@@ -57,8 +57,11 @@ def setup(args):
 
 
 def main(cfg):
-    align = cfg.MODEL.BACKBONE_ALIGN or cfg.MODEL.SPACE_ALIGN or cfg.MODEL.CHANNEL_ALIGN or cfg.MODEL.INSTANCE_ALIGN
-    assert align == (cfg.DATASET.DA_MODE == 'uda')
+    # if you want uda mode, at least one align strategy has to be true
+    # TODO turn this off for plain deformable detr training
+
+    # align = cfg.MODEL.BACKBONE_ALIGN or cfg.MODEL.SPACE_ALIGN or cfg.MODEL.CHANNEL_ALIGN or cfg.MODEL.INSTANCE_ALIGN
+    # assert align == (cfg.DATASET.DA_MODE == 'uda')
 
     print("git:\n  {}\n".format(utils.get_sha()))
     print(cfg)
@@ -78,7 +81,7 @@ def main(cfg):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
-    model, criterion, postprocessors = build_model(cfg)
+    model, criterion, postprocessors, postprocessors_target = build_model(cfg)
     model.to(device)
 
     model_without_ddp = model
@@ -115,6 +118,8 @@ def main(cfg):
     data_loader_val = DataLoader(dataset_val, cfg.TRAIN.BATCH_SIZE, sampler=sampler_val,
                                  drop_last=False, collate_fn=utils.collate_fn, num_workers=cfg.NUM_WORKERS,
                                  pin_memory=True)
+
+    
 
     # lr_backbone_names = ["backbone.0", "backbone.neck", "input_proj", "transformer.encoder"]
     def match_name_keywords(n, name_keywords):
@@ -183,7 +188,7 @@ def main(cfg):
         if not cfg.EVAL and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
             import copy
             p_groups = copy.deepcopy(optimizer.param_groups)
-            optimizer.load_state_dict(checkpoint['optimizer'])
+            # optimizer.load_state_dict(checkpoint['optimizer'])
             for pg, pg_old in zip(optimizer.param_groups, p_groups):
                 pg['lr'] = pg_old['lr']
                 pg['initial_lr'] = pg_old['initial_lr']
@@ -196,19 +201,31 @@ def main(cfg):
                 lr_scheduler.step_size = cfg.TRAIN.LR_DROP
                 lr_scheduler.base_lrs = list(map(lambda group: group['initial_lr'], optimizer.param_groups))
             lr_scheduler.step(lr_scheduler.last_epoch)
-            cfg.START_EPOCH = checkpoint['epoch'] + 1 
+            START_EPOCH = checkpoint['epoch'] + 1
         # check the resumed model
         if not cfg.EVAL:
             test_stats, coco_evaluator = evaluate(
-                model, criterion, postprocessors, data_loader_val, base_ds, device, cfg.OUTPUT_DIR
+                model, criterion, postprocessors, postprocessors_target, data_loader_val, base_ds, device, cfg.OUTPUT_DIR
             )
-    
+
+    # TODO: for retraining
+    elif cfg.FINETUNE:
+        START_EPOCH = checkpoint['epoch'] + 1
+
+
     if cfg.EVAL:
-        test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
+        test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,postprocessors_target,
                                               data_loader_val, base_ds, device, cfg.OUTPUT_DIR)
         if cfg.OUTPUT_DIR:
             utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
         return
+
+    # if resume training, local variable START_EPOCH is created
+    if cfg.RESUME:
+        pass
+    else:
+        # else create a local variable
+        START_EPOCH = 0
 
     print("Start training")
     start_time = time.time()
@@ -233,7 +250,7 @@ def main(cfg):
                 }, checkpoint_path)
 
         test_stats, coco_evaluator = evaluate(
-            model, criterion, postprocessors, data_loader_val, base_ds, device, cfg.OUTPUT_DIR
+            model, criterion, postprocessors, postprocessors_target, data_loader_val, base_ds, device, cfg.OUTPUT_DIR
         )
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},

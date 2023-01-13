@@ -1,0 +1,160 @@
+Traceback (most recent call last):
+  File "main.py", line 30, in <module>
+    from models import build_model
+  File "/scratch2/users/william/aqt_aiiulab/models/__init__.py", line 13, in <module>
+    from .deformable_detr_contrastive import build
+  File "/scratch2/users/william/aqt_aiiulab/models/deformable_detr_contrastive.py", line 37, in <module>
+    from .memory_ema import Memory
+ModuleNotFoundError: No module named 'models.memory_ema'
+Traceback (most recent call last):
+  File "main.py", line 30, in <module>
+    from models import build_model
+  File "/scratch2/users/william/aqt_aiiulab/models/__init__.py", line 13, in <module>
+    from .deformable_detr_contrastive import build
+  File "/scratch2/users/william/aqt_aiiulab/models/deformable_detr_contrastive.py", line 37, in <module>
+    from .memory_ema import Memory
+ModuleNotFoundError: No module named 'models.memory_ema'
+Traceback (most recent call last):
+  File "main.py", line 30, in <module>
+    from models import build_model
+  File "/scratch2/users/william/aqt_aiiulab/models/__init__.py", line 13, in <module>
+    from .deformable_detr_contrastive import build
+  File "/scratch2/users/william/aqt_aiiulab/models/deformable_detr_contrastive.py", line 37, in <module>
+    from .memory_ema import Memory
+ModuleNotFoundError: No module named 'models.memory_ema'
+Traceback (most recent call last):
+  File "main.py", line 30, in <module>
+    from models import build_model
+  File "/scratch2/users/william/aqt_aiiulab/models/__init__.py", line 13, in <module>
+    from .deformable_detr_contrastive import build
+  File "/scratch2/users/william/aqt_aiiulab/models/deformable_detr_contrastive.py", line 37, in <module>
+    from .memory_ema import Memory
+ModuleNotFoundError: No module named 'models.memory_ema'
+Traceback (most recent call last):
+  File "main.py", line 30, in <module>
+    from models import build_model
+  File "/scratch2/users/william/aqt_aiiulab/models/__init__.py", line 13, in <module>
+    from .deformable_detr_contrastive import build
+  File "/scratch2/users/william/aqt_aiiulab/models/deformable_detr_contrastive.py", line 37, in <module>
+    from .memory_ema import Memory
+ModuleNotFoundError: No module named 'models.memory_ema'
+Traceback (most recent call last):
+  File "main.py", line 30, in <module>
+    from models import build_model
+  File "/scratch2/users/william/aqt_aiiulab/models/__init__.py", line 13, in <module>
+    from .deformable_detr_contrastive import build
+  File "/scratch2/users/william/aqt_aiiulab/models/deformable_detr_contrastive.py", line 37, in <module>
+    from .memory_ema import Memory
+ModuleNotFoundError: No module named 'models.memory_ema'
+Traceback (most recent call last):
+  File "main.py", line 30, in <module>
+    from models import build_model
+  File "/scratch2/users/william/aqt_aiiulab/models/__init__.py", line 13, in <module>
+    from .deformable_detr_contrastive import build
+  File "/scratch2/users/william/aqt_aiiulab/models/deformable_detr_contrastive.py", line 37, in <module>
+    from .memory_ema import Memory
+ModuleNotFoundError: No module named 'models.memory_ema'
+Traceback (most recent call last):
+  File "main.py", line 30, in <module>
+    from models import build_model
+  File "/scratch2/users/william/aqt_aiiulab/models/__init__.py", line 13, in <module>
+    from .deformable_detr_contrastive import build
+  File "/scratch2/users/william/aqt_aiiulab/models/deformable_detr_contrastive.py", line 37, in <module>
+    from .memory_ema import Memory
+ModuleNotFoundError: No module named 'models.memory_ema'
+Traceback (most recent call last):
+  File "main.py", line 30, in <module>
+    from models import build_model
+  File "/scratch2/users/william/aqt_aiiulab/models/__init__.py", line 13, in <module>
+    from .deformable_detr_contrastive import build
+  File "/scratch2/users/william/aqt_aiiulab/models/deformable_detr_contrastive.py", line 37, in <module>
+    from .memory_ema import Memory
+ModuleNotFoundError: No module named 'models.memory_ema'
+Traceback (most recent call last):
+  File "main.py", line 30, in <module>
+    from models import build_model
+  File "/scratch2/users/william/aqt_aiiulab/models/__init__.py", line 13, in <module>
+    from .deformable_detr_contrastive import build
+  File "/scratch2/users/william/aqt_aiiulab/models/deformable_detr_contrastive.py", line 37, in <module>
+    from .memory_ema import Memory
+ModuleNotFoundError: No module named 'models.memory_ema'
+Traceback (most recent call last):
+  File "main.py", line 30, in <module>
+    from models import build_model
+  File "/scratch2/users/william/aqt_aiiulab/models/__init__.py", line 13, in <module>
+    from .deformable_detr_contrastive import build
+  File "/scratch2/users/william/aqt_aiiulab/models/deformable_detr_contrastive.py", line 37, in <module>
+    from .memory_ema import Memory
+ModuleNotFoundError: No module named 'models.memory_ema'
+Traceback (most recent call last):
+  File "main.py", line 30, in <module>
+    from models import build_model
+  File "/scratch2/users/william/aqt_aiiulab/models/__init__.py", line 13, in <module>
+    from .deformable_detr_contrastive import build
+  File "/scratch2/users/william/aqt_aiiulab/models/deformable_detr_contrastive.py", line 37, in <module>
+    from .memory_ema import Memory
+ModuleNotFoundError: No module named 'models.memory_ema'
+Traceback (most recent call last):
+  File "main.py", line 30, in <module>
+    from models import build_model
+  File "/scratch2/users/william/aqt_aiiulab/models/__init__.py", line 13, in <module>
+    from .deformable_detr_contrastive import build
+  File "/scratch2/users/william/aqt_aiiulab/models/deformable_detr_contrastive.py", line 37, in <module>
+    from .memory_ema import Memory
+ModuleNotFoundError: No module named 'models.memory_ema'
+Traceback (most recent call last):
+  File "main.py", line 30, in <module>
+    from models import build_model
+  File "/scratch2/users/william/aqt_aiiulab/models/__init__.py", line 13, in <module>
+    from .deformable_detr_contrastive import build
+  File "/scratch2/users/william/aqt_aiiulab/models/deformable_detr_contrastive.py", line 37, in <module>
+    from .memory_ema import Memory
+ModuleNotFoundError: No module named 'models.memory_ema'
+Traceback (most recent call last):
+  File "main.py", line 30, in <module>
+    from models import build_model
+  File "/scratch2/users/william/aqt_aiiulab/models/__init__.py", line 13, in <module>
+    from .deformable_detr_contrastive import build
+  File "/scratch2/users/william/aqt_aiiulab/models/deformable_detr_contrastive.py", line 37, in <module>
+    from .memory_ema import Memory
+ModuleNotFoundError: No module named 'models.memory_ema'
+Traceback (most recent call last):
+  File "main.py", line 30, in <module>
+    from models import build_model
+  File "/scratch2/users/william/aqt_aiiulab/models/__init__.py", line 13, in <module>
+    from .deformable_detr_contrastive import build
+  File "/scratch2/users/william/aqt_aiiulab/models/deformable_detr_contrastive.py", line 37, in <module>
+    from .memory_ema import Memory
+ModuleNotFoundError: No module named 'models.memory_ema'
+Traceback (most recent call last):
+  File "main.py", line 30, in <module>
+    from models import build_model
+  File "/scratch2/users/william/aqt_aiiulab/models/__init__.py", line 13, in <module>
+    from .deformable_detr_contrastive import build
+  File "/scratch2/users/william/aqt_aiiulab/models/deformable_detr_contrastive.py", line 37, in <module>
+    from .memory_ema import Memory
+ModuleNotFoundError: No module named 'models.memory_ema'
+Traceback (most recent call last):
+  File "main.py", line 30, in <module>
+    from models import build_model
+  File "/scratch2/users/william/aqt_aiiulab/models/__init__.py", line 13, in <module>
+    from .deformable_detr_contrastive import build
+  File "/scratch2/users/william/aqt_aiiulab/models/deformable_detr_contrastive.py", line 37, in <module>
+    from .memory_ema import Memory
+ModuleNotFoundError: No module named 'models.memory_ema'
+Traceback (most recent call last):
+  File "main.py", line 30, in <module>
+    from models import build_model
+  File "/scratch2/users/william/aqt_aiiulab/models/__init__.py", line 13, in <module>
+    from .deformable_detr_contrastive import build
+  File "/scratch2/users/william/aqt_aiiulab/models/deformable_detr_contrastive.py", line 37, in <module>
+    from .memory_ema import Memory
+ModuleNotFoundError: No module named 'models.memory_ema'
+Traceback (most recent call last):
+  File "main.py", line 30, in <module>
+    from models import build_model
+  File "/scratch2/users/william/aqt_aiiulab/models/__init__.py", line 13, in <module>
+    from .deformable_detr_contrastive import build
+  File "/scratch2/users/william/aqt_aiiulab/models/deformable_detr_contrastive.py", line 37, in <module>
+    from .memory_ema import Memory
+ModuleNotFoundError: No module named 'models.memory_ema'

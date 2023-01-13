@@ -58,7 +58,7 @@ MODEL:
   TWO_STAGE: False
   WITH_BOX_REFINE: True
 NUM_WORKERS: 2
-OUTPUT_DIR: exps/r50_uda_c2fc
+OUTPUT_DIR: exps/r50_uda_c2fc_contrastive
 RESUME: 
 SEED: 42
 START_EPOCH: 0
@@ -76,3 +76,5 @@ TRAIN:
   SGD: False
   WEIGHT_DECAY: 0.0001
 FINETUNE: False
+EMA: False
+DEBUG: False
