@@ -306,6 +306,7 @@ class DeformableDETR(nn.Module):
             # use matcher idx to get src decoder features
             # TODO dummy dict
             out_dec = {'pred_logits': outputs_class[:B//2][-1], 'pred_boxes': outputs_coords[:B//2][-1]}
+            # TODO since detr loss_label also uses matching, we use that here too
             indices = self.matcher(out_dec, targets) # 
             src_dec_features = []
             src_scores = []
@@ -314,8 +315,10 @@ class DeformableDETR(nn.Module):
             for batch_idx in range(0, B//2, 1):
                 indices_tmp = indices[batch_idx] # tuple
                 src_dec_features.append(hs[-1][batch_idx][indices_tmp[0]]) # get object query position only
-                # import pdb; pdb.set_trace()
                 scores, _ = torch.max(outputs_class_conf[batch_idx][indices_tmp[0]], 1)
+                if len(targets[batch_idx]['labels'].tolist())==0:
+                    # import pdb; pdb.set_trace()
+                    continue
                 src_labels.append(targets[batch_idx]['labels'].tolist()) # list
                 src_scores.append(scores)
 
@@ -323,7 +326,6 @@ class DeformableDETR(nn.Module):
             tgt_scores = []
             tgt_labels = []
             for batch_idx in range(B//2, B, 1):
-                # import pdb; pdb.set_trace()
                 keep_tmp = keep[batch_idx][:,:,0].tolist()[0] # get list of object query indices
                 keep_label_idx = keep[batch_idx][:,:,1].tolist()[0] # get list of object query indices
                 scores, _ = torch.max(outputs_class_conf[batch_idx][keep_tmp], 1)
@@ -331,7 +333,6 @@ class DeformableDETR(nn.Module):
                 tgt_labels.append(keep_label_idx)
                 tgt_scores.append(scores)
 
-            # import pdb; pdb.set_trace()
 
             list_of_labels = []
             list_of_rois = []
@@ -348,6 +349,8 @@ class DeformableDETR(nn.Module):
                 list_of_labels.append(labels)
 
             src_prototypes, tgt_prototypes = weighted_aggregate(B, list_of_labels, list_of_rois, list_of_scores, self.num_classes, self.hidden_dim)
+
+            
 
             ### encoder features
             # feature_w = features[0].tensors.shape[-1] # w
@@ -474,16 +477,20 @@ class DeformableDETR(nn.Module):
 
         # TODO to store things for feat aug
         if self.feat_aug:
+            out['indices'] = indices
             out['features_source'] = list_of_rois[:B//2] # list of tensors
             out['y_s'] = list_of_scores[:B//2] # list of tensors
             out['fc'] = self.class_embed
-            out['source_labels'] = list_of_labels[:B//2] # for computing cross entropy loss
+            out['source_labels'] = torch.as_tensor(list_of_labels[:B//2]).squeeze(0).cuda() # for computing cross entropy loss
             target_features = list_of_rois[B//2:]
             target_labels = list_of_labels[B//2:] # for computing CV
             target_mean = updated_tgt_prototypes - updated_src_prototypes
 
-            # import pdb; pdb.set_trace()
+            # BUG: compute_CV is the bottleneck for slow computation
             out['covariance_target'] = compute_CV(target_features, target_labels, target_mean, self.num_classes)
+
+            # NOTE:testing
+            # out['covariance_target'] = torch.randn((9, 256, 256)).cuda()
 
         if self.debug:
             return out, features, memory, hs
@@ -624,7 +631,7 @@ class SetCriterion(nn.Module):
 
         y_s =torch.cat(y_s, 0)
         features =torch.cat(features, 0) # (num_of_rois, feat_dim)
-        labels_s = torch.as_tensor(labels_s).view(-1).cuda() # (b, num_of_labels)
+        # labels_s = labels_s.view(-1).cuda() # (b, num_of_labels)
 
         N = features.size(0)
         C = self.num_classes
@@ -636,9 +643,10 @@ class SetCriterion(nn.Module):
         
         # import pdb; pdb.set_trace()
         # target covariance matrix
-        t_CV_temp = t_cv_matrix[labels_s]
+        t_CV_temp = t_cv_matrix[labels_s] # BUG: empty labels
 
-        sigma2 = Lambda * torch.bmm(torch.bmm(NxW_ij - NxW_kj, t_CV_temp), (NxW_ij - NxW_kj).permute(0, 2, 1))
+        # sigma2 = Lambda * torch.bmm(torch.bmm(NxW_ij - NxW_kj, t_CV_temp), (NxW_ij - NxW_kj).permute(0, 2, 1))
+        sigma2 = Lambda * torch.matmul(torch.matmul(NxW_ij - NxW_kj, t_CV_temp), (NxW_ij - NxW_kj).permute(0, 2, 1))
         sigma2 = sigma2.mul(torch.eye(C).cuda().expand(N, C, C)).sum(2).view(N, C)
 
         sourceMean_NxA = s_mean_matrix[labels_s]
@@ -650,11 +658,16 @@ class SetCriterion(nn.Module):
         gc.collect()
 
         dataW_NxCxA = NxW_ij - NxW_kj # weight differencr
-        dataW_x_detaMean_NxCx1 = torch.bmm(dataW_NxCxA, dataMean_NxAx1)
+        # dataW_x_detaMean_NxCx1 = torch.bmm(dataW_NxCxA, dataMean_NxAx1)
+        dataW_x_detaMean_NxCx1 = torch.matmul(dataW_NxCxA, dataMean_NxAx1)
+
         datW_x_detaMean_NxC = dataW_x_detaMean_NxCx1.view(N, C)
 
         # the denominator term
-        aug_result = y_s + 0.5 * sigma2 + Lambda * datW_x_detaMean_NxC
+        # import pdb; pdb.set_trace()
+        aug_result = y_s.unsqueeze(-1) + 0.5 * sigma2 + Lambda * datW_x_detaMean_NxC
+
+        # import pdb; pdb.set_trace()
 
         return aug_result # (num_src_labels, class_num)
 
@@ -798,39 +811,7 @@ class SetCriterion(nn.Module):
 
     # TODO: entropy minimization for target only
     def loss_entropy(self, outputs, targets, indices, num_boxes):
-        assert 'pred_logits' in outputs
-        tgt_logits = outputs['pred_logits'] # (1, 300, 9)
-
-        idx = self._get_src_permutation_idx(indices) # (tensor([0, 0]), tensor([175, 186]))
-
-        # import pdb; pdb.set_trace()
-
-        target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)]) # e.g tensor([3, 3])
-
-        # TODO for single class, need to convert target_classes_o to ones since the target_classes_o
-        # elements will be used for scattering the one hot vectors later on
-        # target_classes_o = torch.ones_like(target_classes_o)
-
-        target_classes = torch.full(tgt_logits.shape[:2], self.num_classes,
-                                    dtype=torch.int64, device=tgt_logits.device) # (1, 300)
-
-        target_classes[idx] = target_classes_o # become ones
-
-
-        # (1, 300, 10)
-        target_classes_onehot = torch.zeros([src_logits.shape[0], src_logits.shape[1], src_logits.shape[2] + 1],
-                                            dtype=src_logits.dtype, layout=src_logits.layout, device=src_logits.device)
-
-        
-        target_classes_onehot.scatter_(2, target_classes.unsqueeze(-1), 1) # (dim, index, src tensor)
-
-        # (1, 300, 9)
-        target_classes_onehot = target_classes_onehot[:,:,:-1]
-
-        loss_ce = sigmoid_focal_loss(src_logits, target_classes_onehot, num_boxes, alpha=self.focal_alpha, gamma=2) * src_logits.shape[1]
-        losses = {'loss_ce': loss_ce}
-
-        return losses
+        raise NotImplementedError
 
     def loss_da(self, outputs, use_focal=False):
         B = outputs.shape[0]
@@ -1029,8 +1010,18 @@ class SetCriterion(nn.Module):
             mean_source = outputs['prototypes']['src_prototypes']
             mean_target = outputs['prototypes']['tgt_prototypes']
             aug_y = self.aug(mean_source, mean_target, outputs['fc'], outputs['features_source'], outputs['y_s'], outputs['source_labels'], outputs['covariance_target'], self.Lamda)
-            loss = self.cross_entropy(aug_y, torch.as_tensor(outputs['source_labels']))
-            losses[f'aug_loss'] = loss
+            
+            src_labels = torch.as_tensor(outputs['source_labels']).view(-1).cuda()
+            loss = self.cross_entropy(aug_y, src_labels) # 
+            losses[f'loss_aug'] = loss
+
+            # TODO this should probably be a separate loss, not hacked in this one here
+            target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
+            src_logits = outputs['pred_logits']
+            idx = self._get_src_permutation_idx(indices)
+
+            # import pdb; pdb.set_trace()
+            losses['class_error'] = 100 - accuracy(src_logits[idx], target_classes_o)[0]
 
         # for debugging
         if self.return_indices:
