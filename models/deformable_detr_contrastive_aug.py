@@ -285,7 +285,8 @@ class DeformableDETR(nn.Module):
             B = outputs_class.shape[1] # get batch size
             assert B == memory.shape[0]
 
-            last_layer_out = outputs_class[-1] # bs is after layer num
+            # TODO consider target outputs only
+            last_layer_out = outputs_class[-1][B//2:] # bs is after layer num
 
 
             ### BUG should we use MLP outputs or last layer softmax outputs
@@ -300,63 +301,70 @@ class DeformableDETR(nn.Module):
             # # size: [torch.Size([31, 2]), torch.Size([11, 2])]
             # nonzero returns object query index and the argmax of the class distribution
             keep = [torch.nonzero(outputs_class_conf[b]>thresh).unsqueeze(0) for b in range(outputs_class_conf.shape[0])] # batch wise
-            
+                
             # import pdb; pdb.set_trace()
             ### decoder features
             # use matcher idx to get src decoder features
             # TODO dummy dict
             out_dec = {'pred_logits': outputs_class[:B//2][-1], 'pred_boxes': outputs_coords[:B//2][-1]}
-            # TODO since detr loss_label also uses matching, we use that here too
-            indices = self.matcher(out_dec, targets) # 
+            indices = self.matcher(out_dec, targets)
+
             src_dec_features = []
             src_scores = []
             src_labels = [] # labels
-
             for batch_idx in range(0, B//2, 1):
                 indices_tmp = indices[batch_idx] # tuple
                 src_dec_features.append(hs[-1][batch_idx][indices_tmp[0]]) # get object query position only
+                # import pdb; pdb.set_trace()
                 scores, _ = torch.max(outputs_class_conf[batch_idx][indices_tmp[0]], 1)
-                if len(targets[batch_idx]['labels'].tolist())==0:
-                    # import pdb; pdb.set_trace()
-                    continue
                 src_labels.append(targets[batch_idx]['labels'].tolist()) # list
                 src_scores.append(scores)
 
             tgt_dec_features = []
             tgt_scores = []
             tgt_labels = []
-            for batch_idx in range(B//2, B, 1):
-                keep_tmp = keep[batch_idx][:,:,0].tolist()[0] # get list of object query indices
-                keep_label_idx = keep[batch_idx][:,:,1].tolist()[0] # get list of object query indices
-                scores, _ = torch.max(outputs_class_conf[batch_idx][keep_tmp], 1)
-                tgt_dec_features.append(hs[-1][batch_idx][keep_tmp])
-                tgt_labels.append(keep_label_idx)
-                tgt_scores.append(scores)
 
+            # warning: empty target features may cause 0 target variance
+            for batch_idx in range(B//2):
+                if len(keep[batch_idx])==0:
+                    continue
+                else:
+                    keep_tmp = keep[batch_idx][:,:,0].tolist()[0] # get list of object query indices
+                    keep_label_idx = keep[batch_idx][:,:,1].tolist()[0] # get list of object query indices
+                    scores, _ = torch.max(outputs_class_conf[batch_idx][keep_tmp], 1)
+                    tgt_dec_features.append(hs[-1][batch_idx][keep_tmp])
+                    tgt_labels.append(keep_label_idx)
+                    tgt_scores.append(scores)
 
+            # worst case they will only contain source features
             list_of_labels = []
             list_of_rois = []
             list_of_scores = []
-
+            
             for features, scores, labels in zip(src_dec_features, src_scores, src_labels):
                 list_of_rois.append(features)
                 list_of_scores.append(scores)
                 list_of_labels.append(labels)
 
-            for features, scores, labels in zip(tgt_dec_features, tgt_scores, tgt_labels):
-                list_of_rois.append(features)
-                list_of_scores.append(scores)
-                list_of_labels.append(labels)
-
-            src_prototypes, tgt_prototypes = weighted_aggregate(B, list_of_labels, list_of_rois, list_of_scores, self.num_classes, self.hidden_dim)
+            if len(tgt_dec_features) == 0 and len(tgt_scores)==0 and len(tgt_labels)==0:
+                pass
+            else:
+                for features, scores, labels in zip(tgt_dec_features, tgt_scores, tgt_labels):
+                    list_of_rois.append(features)
+                    list_of_scores.append(scores)
+                    list_of_labels.append(labels)
 
             
+            src_prototypes, tgt_prototypes = weighted_aggregate(B, list_of_labels, list_of_rois, list_of_scores, self.num_classes, self.hidden_dim)
 
             ### encoder features
+            # torch.Size([2, 512, 84, 167]), torch.Size([2, 1024, 42, 84]), torch.Size([2, 2048, 21, 42])
+
             # feature_w = features[0].tensors.shape[-1] # w
             # feature_h = features[0].tensors.shape[-2] # h
             # feature_c = memory.shape[-1]
 
+            # # import pdb; pdb.set_trace()
             # # memory = memory[0] # src
             # memory_reshaped = memory.reshape(-1, feature_h, feature_w, feature_c).permute(0,3,1,2)
 
@@ -365,54 +373,77 @@ class DeformableDETR(nn.Module):
             # list_of_scores = [] # list of tensors
             # rescaled_boxes = [] # list of tensors (boxes rescaled back to fit the image dim)
 
-            # # collect source and target rois
-            # for batch_idx in range(B):
+            # source_anno_size_only = targets[:B//2]
+            # # keep source and target separate since it is clearner this way
+            # for batch_idx in range(0, B//2, 1):
+            #     source_boxes = targets[batch_idx]['boxes']
+            #     source_labels = targets[batch_idx]['labels'].tolist()
+            #     source_scores = torch.ones(source_boxes.shape[0]).cuda()
+
+            #     boxes_rescaled = box_ops.box_cxcywh_to_xyxy(source_boxes) # src only, batch size = 1
+            #     # and from relative [0, 1] to absolute [0, height] coordinates
+            #     # img_sizes = torch.stack([t["size"] for t in targets], dim=0)
+            #     img_sizes = source_anno_size_only[batch_idx]["size"]
+            #     img_h, img_w = img_sizes.unbind(0)
+            #     scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=0)
+            #     for b in range(boxes_rescaled.shape[0]):
+            #         boxes_rescaled[b] *= scale_fct[0] # batch_size = 1, one image
+            #     rescaled_boxes.append(boxes_rescaled) # delist
+            #     list_of_labels.append(source_labels)
+            #     list_of_scores.append(source_scores)
+
+            # # collect target rois (batch-wise targets)
+            # # TODO get size from target anno, not cheating
+            # targets_anno_size_only = targets[B//2:B]
+            # assert len(targets_anno_size_only) == B//2
+
+            # for batch_idx in range(B//2):
+            #     # import pdb; pdb.set_trace()
             #     keep_tmp = keep[batch_idx][:,:,0].tolist()[0] # get list of indices
             #     keep_label_idx = keep[batch_idx][:,:,1].tolist()[0]
-
-            #     boxes = outputs_coord[-1][batch_idx][keep_tmp] # get last layer predicted boxes
-
+            #     # import pdb; pdb.set_trace()
+            #     target_boxes = outputs_coord[-1][batch_idx][keep_tmp] # get last layer predicted boxes
+            #     # import pdb; pdb.set_trace()
             #     # TODO rescale boxes (for batch size >1, this is to be modified)
-            #     boxes_rescaled = [box_ops.box_cxcywh_to_xyxy(boxes)] # src only, batch size = 1
+            #     boxes_rescaled = box_ops.box_cxcywh_to_xyxy(target_boxes) # src only, batch size = 1
             #     # and from relative [0, 1] to absolute [0, height] coordinates
-            #     img_sizes = torch.stack([t["size"] for t in targets], dim=0)
-            #     img_h, img_w = img_sizes.unbind(1)
-            #     scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1)
+            #     # not cheating
+            #     img_sizes = targets_anno_size_only[batch_idx]["size"]
 
-            #     for b in range(boxes_rescaled[0].shape[0]):
-            #         boxes_rescaled[0][b] *= scale_fct[0] # batch_size = 1, one image
+            #     # img_sizes = torch.stack([t["size"] for t in targets_anno_size_only], dim=0)
+            #     img_h, img_w = img_sizes.unbind(0)
+            #     scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=0)
+            #     for b in range(boxes_rescaled.shape[0]):
+            #         boxes_rescaled[b] *= scale_fct[0] # batch_size = 1, one image
 
-            #     rescaled_boxes.append(boxes_rescaled[0]) # delist
+            #     rescaled_boxes.append(boxes_rescaled)
             #     list_of_labels.append(keep_label_idx)
                                 
             #     scores, _ = torch.max(outputs_class_conf[batch_idx][keep_tmp], dim=1)
             #     # import pdb; pdb.set_trace()
             #     list_of_scores.append(scores)
 
-            #     # for box_i in range(boxes.shape[0]):
-            #     #     memory --> torch.Size([1, c_dim, spatial_dim, spatial_dim])
-            #     #     boxes --> torch.Size([1, spatial_dim, c_dim])
+                # for box_i in range(boxes.shape[0]):
+                #     memory --> torch.Size([1, c_dim, spatial_dim, spatial_dim])
+                #     boxes --> torch.Size([1, spatial_dim, c_dim])
 
-            # # import pdb; pdb.set_trace()
-            # # list_of_labels
-            # # contains one source and one target
-            # # num_points = rescaled_boxes[0].shape[-1]
-            # # affine_warp = torch.zeros((3,3)) # transform matrix
-            # # pad num
-            # # diff = max(rescaled_boxes[0].shape[0], rescaled_boxes[1].shape[0]) - min(rescaled_boxes[0].shape[0], rescaled_boxes[1].shape[0])
+            # import pdb; pdb.set_trace()
+            # list_of_labels
+            # contains one source and one target
+            # num_points = rescaled_boxes[0].shape[-1]
+            # affine_warp = torch.zeros((3,3)) # transform matrix
+            # pad num
+            # diff = max(rescaled_boxes[0].shape[0], rescaled_boxes[1].shape[0]) - min(rescaled_boxes[0].shape[0], rescaled_boxes[1].shape[0])
             
-            # # TODO pad proposal boxes
-            # # batched rois
+            # TODO pad proposal boxes
+            # batched rois
             # list_of_rois = []
-            # # import pdb; pdb.set_trace
-            # # import pdb; pdb.set_trace()
             # for batch_idx in range(B):
             #     # rois: torch.Size([31, 256])
             #     rois = torchvision.ops.roi_align(memory_reshaped[batch_idx].unsqueeze(0), [rescaled_boxes[batch_idx]], output_size=(7, 7), spatial_scale=1/32.0, aligned=True).mean(3).mean(2)
             #     list_of_rois.append(rois)
-            
-            # # import pdb; pdb.set_trace()
-            # ## weighted aggregate
+
+            ## weighted aggregate
             # src_prototypes, tgt_prototypes = weighted_aggregate(B, list_of_labels, list_of_rois, list_of_scores, self.num_classes, self.hidden_dim)
 
 
@@ -939,6 +970,10 @@ class SetCriterion(nn.Module):
 
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
 
+        # TODO use source targets only
+        targets = targets[:len(targets)//2]
+
+        # import pdb; pdb.set_trace()
         # Retrieve the matching between the outputs of the last layer and the targets
         indices = self.matcher(outputs_without_aux, targets)
 
