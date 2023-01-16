@@ -39,6 +39,10 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
     prefetcher = data_prefetcher(data_loader, device, prefetch=True)
     samples, targets = prefetcher.next()
+
+    all_target_labels = [t['labels'].tolist() for t in targets]
+    if 0 in all_target_labels:
+        samples, targets = prefetcher.next()
     
     data_loader_len = len(data_loader)
     total_iter = data_loader_len*total_epoch
@@ -46,11 +50,11 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     # for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
     for iter in metric_logger.log_every(range(data_loader_len), print_freq, header):
         
-        # import pdb; pdb.set_trace()
         cur_iter += iter # update iter
         # pass current iter num
+
         outputs = model(samples, targets, cur_iter, total_iter)
-        # import pdb; pdb.set_trace()
+
 
         # TODO debug mode
         if type(outputs)==tuple:
@@ -79,6 +83,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         # store scaled losses
         loss_dict_reduced_scaled = {k: v * weight_dict[k]
                                     for k, v in loss_dict_reduced.items() if k in weight_dict}
+
+        # import pdb; pdb.set_trace()
 
         # get total loss
         losses_reduced_scaled = sum(loss_dict_reduced_scaled.values())
@@ -109,8 +115,12 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
 
+
     # TODO at the end of each epoch, return the updated cur_iter
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, cur_iter
+    if 'probs' in outputs:
+        return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, cur_iter, outputs['probs']
+    else:
+        return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, cur_iter
 
 
 @torch.no_grad()
@@ -140,7 +150,11 @@ def evaluate(model, criterion, postprocessors, postprocessors_target, data_loade
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
+        
+
         outputs = model(samples, None, None, None)
+
+        # import pdb; pdb.set_trace()
         loss_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict
 
@@ -163,7 +177,7 @@ def evaluate(model, criterion, postprocessors, postprocessors_target, data_loade
         results = postprocessors['bbox'](outputs, orig_target_sizes)
 
         # TODO plot predictions on target data
-        root = data_loader.dataset.root # PositxPath
+        # root = data_loader.dataset.root # PositxPath
 
         # # import pdb; pdb.set_trace()
         # img_id = targets[1]['image_id'].item() # BUG index error
