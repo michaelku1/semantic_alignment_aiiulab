@@ -4,7 +4,7 @@
 
 ## train from scratch:
 
-CUDA_VISIBLE_DEVICES=0 GPUS_PER_NODE=1 ./tools/run_dist_launch.sh 1 --master_port 29110 python main.py --config_file configs/contrastive.yaml --opts OUTPUT_DIR ./exps/exp1/contrastive TRAIN.EPOCHS 100 DATASET.NUM_CLASSES 9 TRAIN.BATCH_SIZE 2 FINETUNE False MODEL.STAGE train_AQT
+CUDA_VISIBLE_DEVICES=4 GPUS_PER_NODE=1 ./tools/run_dist_launch.sh 1 --master_port 29106 python main.py --config_file configs/contrastive.yaml --opts OUTPUT_DIR ./exps/contrastive_subset_retrain/ TRAIN.EPOCHS 150 DATASET.NUM_CLASSES 9 TRAIN.BATCH_SIZE 2 FINETUNE False EMA True MODEL.STAGE train_AQT
 
 ## resume training:
 
