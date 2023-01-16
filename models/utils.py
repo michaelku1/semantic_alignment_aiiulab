@@ -80,7 +80,7 @@ def weighted_aggregate(batch_d, list_of_labels, list_of_rois, list_of_scores, nu
 
     epsilon = 1e-6
     # this is to also index labels (one-to-one)
-    # batch length
+    # batch len
     for i in range(len(source_rois)):
         roi_sample_tmp = source_rois[i] # some rois for a single class
         # some rois
@@ -127,13 +127,15 @@ def compute_CV(features, labels, ave_CxA, class_num):
     gc.collect()
 
     avg_NxCxA = ave_CxA.expand(N, C, A)
+
+    # import pdb; pdb.set_trace()
     for c in range(C):
         features_by_sort_c = NxCxFeatures[:, c, :].mul(NxCxA_onehot[:, c, :])
         avg_by_sort_c = avg_NxCxA[:, c, :].mul(NxCxA_onehot[:, c, :])
         var_temp_c = features_by_sort_c - avg_by_sort_c
         var_temp[c] = torch.mm(var_temp_c.permute(1,0), var_temp_c).div(Amount_CxAxA[c])
     
-    return var_temp.detach() # (C, A, A)
+    return var_temp.detach() # (C, A, A) checked, values seems ok
 
 
 def remove_mask_and_warp(src, pos, padding_mask, level_start_index, spatial_shapes):
