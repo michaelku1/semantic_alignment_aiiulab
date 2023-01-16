@@ -677,28 +677,25 @@ class SetCriterion(nn.Module):
         t_CV_temp = t_cv_matrix[labels_s] # BUG: empty labels
 
         # sigma2 = Lambda * torch.bmm(torch.bmm(NxW_ij - NxW_kj, t_CV_temp), (NxW_ij - NxW_kj).permute(0, 2, 1))
-        sigma2 = Lambda * torch.matmul(torch.matmul(NxW_ij - NxW_kj, t_CV_temp), (NxW_ij - NxW_kj).permute(0, 2, 1))
+        sigma2 = Lambda * torch.bmm(torch.bmm(NxW_ij - NxW_kj, t_CV_temp), (NxW_ij - NxW_kj).permute(0, 2, 1))
         sigma2 = sigma2.mul(torch.eye(C).cuda().expand(N, C, C)).sum(2).view(N, C)
 
         sourceMean_NxA = s_mean_matrix[labels_s]
         targetMean_NxA = t_mean_matrix[labels_s]
         dataMean_NxA = (targetMean_NxA - sourceMean_NxA) # inter domain mean
-        dataMean_NxAx1 = dataMean_NxA.expand(1, N, A).permute(1, 2, 0)
+        dataMean_NxAx1 = dataMean_NxA.expand(1, N, A).permute(1, 2, 0) # (20, 256, 1)
 
         del t_CV_temp, sourceMean_NxA, targetMean_NxA, dataMean_NxA
         gc.collect()
 
-        dataW_NxCxA = NxW_ij - NxW_kj # weight differencr
-        # dataW_x_detaMean_NxCx1 = torch.bmm(dataW_NxCxA, dataMean_NxAx1)
-        dataW_x_detaMean_NxCx1 = torch.matmul(dataW_NxCxA, dataMean_NxAx1)
+        dataW_NxCxA = NxW_ij - NxW_kj # weight difference # (20, 9, 256)
+        dataW_x_detaMean_NxCx1 = torch.bmm(dataW_NxCxA, dataMean_NxAx1)
 
         datW_x_detaMean_NxC = dataW_x_detaMean_NxCx1.view(N, C)
 
         # the denominator term
         # import pdb; pdb.set_trace()
         aug_result = y_s.unsqueeze(-1) + 0.5 * sigma2 + Lambda * datW_x_detaMean_NxC
-
-        # import pdb; pdb.set_trace()
 
         return aug_result # (num_src_labels, class_num)
 
@@ -970,9 +967,14 @@ class SetCriterion(nn.Module):
 
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
 
-        # TODO use source targets only
-        targets = targets[:len(targets)//2]
-
+        # TODO we only want to load source targets
+        if self.mode == 'train':
+            targets = targets[:len(targets)//2]
+        elif self.mode == 'test':
+            pass
+        else:
+            raise NotImplementedError
+            
         # import pdb; pdb.set_trace()
         # Retrieve the matching between the outputs of the last layer and the targets
         indices = self.matcher(outputs_without_aux, targets)
