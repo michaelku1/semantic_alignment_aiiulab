@@ -111,6 +111,7 @@ def main(cfg):
         assert cfg.TRAIN.BATCH_SIZE % 2 == 0, f'cfg.TRAIN.BATCH_SIZE {cfg.TRAIN.BATCH_SIZE} should be a multiple of 2'
         batch_sampler_train = torch.utils.data.BatchSampler(
             sampler_train, cfg.TRAIN.BATCH_SIZE//2, drop_last=True)
+            
         data_loader_train = DataLoader(dataset_train, batch_sampler=batch_sampler_train,
                                        collate_fn=DAOD.collate_fn, num_workers=cfg.NUM_WORKERS,
                                        pin_memory=True)
@@ -276,7 +277,10 @@ def main(cfg):
 
     # TODO: for retraining
     elif cfg.FINETUNE:
-        START_EPOCH = checkpoint['epoch'] + 1
+        if checkpoint['epoch']:
+            START_EPOCH = checkpoint['epoch'] + 1
+        else:
+            raise ValueError('missing resume model while finetune is on')
 
     if cfg.EVAL:
         test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,postprocessors_target,
@@ -300,8 +304,14 @@ def main(cfg):
         if cfg.DIST.DISTRIBUTED:
             sampler_train.set_epoch(epoch)
         
-        train_stats, cur_iter = train_one_epoch(
-            model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS, total_iter, cfg.TRAIN.CLIP_MAX_NORM)
+        # TODO: probe probs
+        if cfg.ACCUMULATE_STATS:
+            train_stats, cur_iter, probs = train_one_epoch(
+                model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS, total_iter, cfg.TRAIN.CLIP_MAX_NORM)
+        
+        else:
+            train_stats, cur_iter = train_one_epoch(
+                model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS, total_iter, cfg.TRAIN.CLIP_MAX_NORM)
         
         total_iter = cur_iter # TODO update total_iter after each training epoch
         
@@ -331,6 +341,13 @@ def main(cfg):
                      'epoch': epoch,
                      'n_parameters': n_parameters}
 
+        # TODO store stats in a dictionary
+        if cfg.ACCUMULATE_STATS:
+            stats = {'probs': probs}
+            with (output_dir/"stats.txt").open("a") as f:
+                f.write(json.dumps(stats) + "\n")
+
+        # log per epoch stats
         if cfg.OUTPUT_DIR and utils.is_main_process():
             with (output_dir / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
