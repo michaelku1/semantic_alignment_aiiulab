@@ -57,6 +57,8 @@ MODEL:
   SPACE_ALIGN: True
   TWO_STAGE: False
   WITH_BOX_REFINE: True
+  STAGE: pretrain
+
 NUM_WORKERS: 2
 OUTPUT_DIR: exps/r50_uda_c2fc
 RESUME: 
@@ -76,3 +78,7 @@ TRAIN:
   SGD: False
   WEIGHT_DECAY: 0.0001
 FINETUNE: False
+DEBUG: False
+EMA: False
+FEAT_AUG: False
+ACCUMULATE_STATS: False
