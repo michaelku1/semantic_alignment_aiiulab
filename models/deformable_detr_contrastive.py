@@ -616,7 +616,7 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
-    def __init__(self, num_classes, matcher, weight_dict, losses, focal_alpha=0.25, da_gamma=2, return_indices=False, margin = 1, feat_aug=False, Lamda=0.25, eos_coef=0.1):
+    def __init__(self, num_classes, matcher, weight_dict, losses, focal_alpha=0.25, da_gamma=2, return_indices=False, margin = 1, feat_aug=False, Lamda=0.25, eos_coef=0.1, mode='train'):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -638,6 +638,7 @@ class SetCriterion(nn.Module):
         self.feat_aug = feat_aug
         self.Lamda = Lamda
         self.eos_coef = eos_coef
+        self.mode = mode
 
         # TODO original detr implementation
         empty_weight = torch.ones(self.num_classes) # original implementation is torch.ones(self.num_classes +1) but not sure why
@@ -681,6 +682,7 @@ class SetCriterion(nn.Module):
         datW_x_detaMean_NxC = dataW_x_detaMean_NxCx1.view(N, C)
 
         # the denominator term
+        import pdb; pdb.set_trace()
         aug_result = y_s + 0.5 * sigma2 + Lambda * datW_x_detaMean_NxC
 
         return aug_result # (num_src_labels, class_num)
@@ -950,8 +952,16 @@ class SetCriterion(nn.Module):
 
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
         
+
         # TODO we only want to load source targets
-        targets = targets[:len(targets)//2]
+        if self.mode == 'train':
+            targets = targets[:len(targets)//2]
+        elif self.mode == 'test':
+            pass
+        else:
+            raise NotImplementedError
+        
+
         # Retrieve the matching between the outputs of the last layer and the targets
         indices = self.matcher(outputs_without_aux, targets)
 
@@ -1201,4 +1211,3 @@ def build(cfg):
             postprocessors["panoptic"] = PostProcessPanoptic(is_thing_map, threshold=0.85)
 
     return model, criterion, postprocessors, postprocessors_target
-
