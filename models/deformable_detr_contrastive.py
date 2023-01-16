@@ -1201,3 +1201,4 @@ def build(cfg):
             postprocessors["panoptic"] = PostProcessPanoptic(is_thing_map, threshold=0.85)
 
     return model, criterion, postprocessors, postprocessors_target
+
