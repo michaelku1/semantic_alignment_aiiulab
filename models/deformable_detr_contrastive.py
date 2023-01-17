@@ -411,7 +411,8 @@ class DeformableDETR(nn.Module):
 
                 rescaled_boxes.append(boxes_rescaled)
                 list_of_labels.append(keep_label_idx)
-                                
+
+                import pdb; pdb.set_trace()
                 scores, _ = torch.max(outputs_class_conf[batch_idx][keep_tmp], dim=1)
                 # import pdb; pdb.set_trace()
                 list_of_scores.append(scores)

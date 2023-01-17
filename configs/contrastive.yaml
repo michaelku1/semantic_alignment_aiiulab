@@ -1,7 +1,7 @@
 CACHE_MODE: False
 DATASET:
   COCO_PANOPTIC_PATH: None
-  COCO_PATH: ../datasets
+  COCO_PATH: ./datasets
   DATASET_FILE: cityscapes_to_foggy_cityscapes
   DA_MODE: uda
   NUM_CLASSES: 9
@@ -57,7 +57,7 @@ MODEL:
   SPACE_ALIGN: True
   TWO_STAGE: False
   WITH_BOX_REFINE: True
-  STAGE: pretrain
+  STAGE: train_AQT
 
 NUM_WORKERS: 2
 OUTPUT_DIR: exps/r50_uda_c2fc

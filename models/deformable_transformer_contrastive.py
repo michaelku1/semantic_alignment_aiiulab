@@ -24,7 +24,7 @@ from models.ops.modules import MSDeformAttn
 # TODO: use category_feature_attention to get category specific encoder features before learning the query token
 from models.utils import DomainAttention, GradientReversal, remove_mask_and_warp, category_feature_attention
 # TODO: siamese attention
-from models.attention import SingleHeadSiameseAttention
+# from models.attention import SingleHeadSiameseAttention
 
 class DeformableTransformer(nn.Module):
     def __init__(self, d_model=256, nhead=8,
