@@ -616,7 +616,7 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
-    def __init__(self, num_classes, matcher, weight_dict, losses, focal_alpha=0.25, da_gamma=2, return_indices=False, margin = 1, feat_aug=False, Lamda=0.25, eos_coef=0.1, mode='train'):
+    def __init__(self, num_classes, matcher, weight_dict, losses, focal_alpha=0.25, da_gamma=2, return_indices=False, margin = 1, feat_aug=False, Lamda=0.25, eos_coef=0.1):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -638,7 +638,6 @@ class SetCriterion(nn.Module):
         self.feat_aug = feat_aug
         self.Lamda = Lamda
         self.eos_coef = eos_coef
-        self.mode = mode
 
         # TODO original detr implementation
         empty_weight = torch.ones(self.num_classes) # original implementation is torch.ones(self.num_classes +1) but not sure why
@@ -682,7 +681,7 @@ class SetCriterion(nn.Module):
         datW_x_detaMean_NxC = dataW_x_detaMean_NxCx1.view(N, C)
 
         # the denominator term
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
         aug_result = y_s + 0.5 * sigma2 + Lambda * datW_x_detaMean_NxC
 
         return aug_result # (num_src_labels, class_num)
@@ -887,17 +886,21 @@ class SetCriterion(nn.Module):
         # source = source.view(-1, source.shape[2])
         # target = target.view(-1, target.shape[2])
 
+        # intra_loss = torch.as_tensor([0]).cuda()
+        # inter_loss = torch.as_tensor([0]).cuda()
+
         intra_loss = 0
         inter_loss = 0
-
 
         # import pdb; pdb.set_trace()
         for cls_idx in range(self.num_classes):
             # i gives a fixed class
-            tmp_src_feat_1 = source[cls_idx, :]
-            tmp_tgt_feat_1 = target[cls_idx, :]
+            tmp_src_feat_1 = source[cls_idx, :] # per class prototype
+            tmp_tgt_feat_1 = target[cls_idx, :] # per class prototype
             
-            # import pdb; pdb.set_trace()
+            if torch.abs(tmp_src_feat_1.sum())<1e-5 or torch.abs(tmp_src_feat_1.sum())<1e-5:
+                continue
+
             # intra
             intra_loss = intra_loss + self.distance(tmp_src_feat_1, tmp_tgt_feat_1)
 
@@ -930,19 +933,35 @@ class SetCriterion(nn.Module):
                     2) * torch.pow(
                     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
                               torch.tensor(0).float().cuda()), 2.0)
-        
+
+            # import pdb; pdb.set_trace()
         # import pdb; pdb.set_trace()
+
         # average over all classes*batch_dim 
         intra_loss = intra_loss / source.shape[0]
+
         # combinations between each class for two domains
         inter_loss = inter_loss / (source.shape[0] * (source.shape[0] - 1) * 2) # at the of the iteration the there will be one "next class" being left off
-    
 
         # import pdb; pdb.set_trace()
+        # print(intra_loss)
+        # print(inter_loss)
+
+        if not torch.is_tensor(intra_loss):
+            intra_loss = torch.as_tensor(intra_loss)
+        
+        if not torch.is_tensor(inter_loss):
+            inter_loss = torch.as_tensor(inter_loss)
+
+        # print(type(intra_loss))
+        # print(type(inter_loss))
+
+        # if isinstance(intra_loss, float) or isinstance(inter_loss, float):
+        #     import pdb; pdb.set_trace()
 
         return intra_loss.cuda(), inter_loss.cuda()
 
-    def forward(self, outputs, targets):
+    def forward(self, outputs, targets, mode='train'):
         """ This performs the loss computation.
         Parameters:
              outputs: dict of tensors, see the output specification of the model for the format
@@ -954,9 +973,9 @@ class SetCriterion(nn.Module):
         
 
         # TODO we only want to load source targets
-        if self.mode == 'train':
+        if mode == 'train':
             targets = targets[:len(targets)//2]
-        elif self.mode == 'test':
+        elif mode == 'test':
             pass
         else:
             raise NotImplementedError
