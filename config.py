@@ -189,6 +189,7 @@ _C.FINETUNE = False
 _C.EMA = False
 _C.FEAT_AUG = False
 _C.ACCUMULATE_STATS = False
+_C.CONTRASTIVE = False
 
 
 def get_cfg_defaults():
