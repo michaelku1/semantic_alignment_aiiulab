@@ -83,3 +83,4 @@ FINETUNE: True
 DEBUG: False
 EMA: False
 FEAT_AUG: True
+CONTRASTIVE: False
