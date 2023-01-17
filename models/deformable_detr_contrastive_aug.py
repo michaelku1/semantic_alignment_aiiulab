@@ -279,8 +279,7 @@ class DeformableDETR(nn.Module):
         #     spatial_scale = 1/16.0
         # elif scale == 2:
         #     spatial_scale = 1/32.0 # default
-
-        # TODO: inter-, intra- contrastive loss
+        
         if self.training:
             B = outputs_class.shape[1] # get batch size
             assert B == memory.shape[0]
@@ -302,12 +301,9 @@ class DeformableDETR(nn.Module):
             # nonzero returns object query index and the argmax of the class distribution
             keep = [torch.nonzero(outputs_class_conf[b]>thresh).unsqueeze(0) for b in range(outputs_class_conf.shape[0])] # batch wise
                 
-            # import pdb; pdb.set_trace()
-            ### decoder features
-            # use matcher idx to get src decoder features
             # TODO dummy dict
             out_dec = {'pred_logits': outputs_class[:B//2][-1], 'pred_boxes': outputs_coords[:B//2][-1]}
-            indices = self.matcher(out_dec, targets)
+            indices = self.matcher(out_dec, targets[:B//2])
 
             src_dec_features = []
             src_scores = []
@@ -319,6 +315,10 @@ class DeformableDETR(nn.Module):
                 scores, _ = torch.max(outputs_class_conf[batch_idx][indices_tmp[0]], 1)
                 src_labels.append(targets[batch_idx]['labels'].tolist()) # list
                 src_scores.append(scores)
+
+            # print(targets)
+            # print(indices)
+            # print(src_scores)
 
             tgt_dec_features = []
             tgt_scores = []
@@ -354,7 +354,6 @@ class DeformableDETR(nn.Module):
                     list_of_scores.append(scores)
                     list_of_labels.append(labels)
 
-            
             src_prototypes, tgt_prototypes = weighted_aggregate(B, list_of_labels, list_of_rois, list_of_scores, self.num_classes, self.hidden_dim)
 
             ### encoder features
@@ -446,7 +445,6 @@ class DeformableDETR(nn.Module):
             ## weighted aggregate
             # src_prototypes, tgt_prototypes = weighted_aggregate(B, list_of_labels, list_of_rois, list_of_scores, self.num_classes, self.hidden_dim)
 
-
             if self.ema:
                 #memory monitoring
                 # tracemalloc.start()
@@ -516,10 +514,9 @@ class DeformableDETR(nn.Module):
             target_features = list_of_rois[B//2:]
             target_labels = list_of_labels[B//2:] # for computing CV
             target_mean = updated_tgt_prototypes - updated_src_prototypes
-
             # BUG: compute_CV is the bottleneck for slow computation
             out['covariance_target'] = compute_CV(target_features, target_labels, target_mean, self.num_classes)
-
+            
             # NOTE:testing
             # out['covariance_target'] = torch.randn((9, 256, 256)).cuda()
 
@@ -660,43 +657,73 @@ class SetCriterion(nn.Module):
         # labels_s is source labels
         # features are source features
 
-        y_s =torch.cat(y_s, 0)
-        features =torch.cat(features, 0) # (num_of_rois, feat_dim)
-        # labels_s = labels_s.view(-1).cuda() # (b, num_of_labels)
+        if len(labels_s) == 0:
+            import pdb; pdb.set_trace()
+            y_s = torch.zeros((9), device='cuda')
+            features = torch.zeros((1,256), device='cuda')
+            labels_s = torch.zeros((1), device='cuda', dtype=torch.int64)
+            labels_s = labels_s.view(-1).cuda()
+            N = features.size(0)
+            C = self.num_classes
+            A = features.size(1)
 
-        N = features.size(0)
-        C = self.num_classes
-        A = features.size(1)
+            weight_m = list(fc.parameters())[0]
+            NxW_ij = weight_m.expand(N, C, A)
+            NxW_kj = torch.gather(NxW_ij, 1, labels_s.view(1, 1, 1).expand(N, C, A))
+            t_CV_temp = t_cv_matrix[labels_s]
 
-        weight_m = list(fc.parameters())[0]
-        NxW_ij = weight_m.expand(N, C, A)
-        NxW_kj = torch.gather(NxW_ij, 1, labels_s.view(N, 1, 1).expand(N, C, A))
-        
-        # import pdb; pdb.set_trace()
-        # target covariance matrix
-        t_CV_temp = t_cv_matrix[labels_s] # BUG: empty labels
+            # torch.Size([1, 9])
+            # sourceMean_NxA = torch.zeros((1,256), device='cuda')
+            # targetMean_NxA = torch.zeros((1,256), device='cuda')
+            
+        else:
+            y_s =torch.cat(y_s, 0)
+            features =torch.cat(features, 0) # (num_of_rois, feat_dim)
+            labels_s = labels_s.view(-1).cuda() # (b, num_of_labels)
 
-        # sigma2 = Lambda * torch.bmm(torch.bmm(NxW_ij - NxW_kj, t_CV_temp), (NxW_ij - NxW_kj).permute(0, 2, 1))
-        sigma2 = Lambda * torch.bmm(torch.bmm(NxW_ij - NxW_kj, t_CV_temp), (NxW_ij - NxW_kj).permute(0, 2, 1))
-        sigma2 = sigma2.mul(torch.eye(C).cuda().expand(N, C, C)).sum(2).view(N, C)
+            N = features.size(0)
+            C = self.num_classes
+            A = features.size(1)
+
+            weight_m = list(fc.parameters())[0]
+            # import pdb; pdb.set_trace()
+            NxW_ij = weight_m.expand(N, C, A)
+            NxW_kj = torch.gather(NxW_ij, 1, labels_s.view(N, 1, 1).expand(N, C, A))
+
+            # target covariance matrix
+            # in case of empty labels
+            # torch.Size([10, 256, 256])
+            t_CV_temp = t_cv_matrix[labels_s] # BUG: labels_s may be empty labels
 
         sourceMean_NxA = s_mean_matrix[labels_s]
         targetMean_NxA = t_mean_matrix[labels_s]
+
+        # torch.Size([1, 9, 9])
+        sigma2 = Lambda * torch.bmm(torch.bmm(NxW_ij - NxW_kj, t_CV_temp), (NxW_ij - NxW_kj).permute(0, 2, 1))
+        # torch.Size([1, 9])
+        sigma2 = sigma2.mul(torch.eye(C, device='cuda').expand(N, C, C)).sum(2).view(N, C)
+
+        # torch.Size([1, 256])
         dataMean_NxA = (targetMean_NxA - sourceMean_NxA) # inter domain mean
+
+        # torch.Size([1, 256, 1])
         dataMean_NxAx1 = dataMean_NxA.expand(1, N, A).permute(1, 2, 0) # (20, 256, 1)
 
         del t_CV_temp, sourceMean_NxA, targetMean_NxA, dataMean_NxA
         gc.collect()
 
         dataW_NxCxA = NxW_ij - NxW_kj # weight difference # (20, 9, 256)
+        # torch.Size([1, 9, 1])
         dataW_x_detaMean_NxCx1 = torch.bmm(dataW_NxCxA, dataMean_NxAx1)
-
+        # torch.Size([1, 9])
         datW_x_detaMean_NxC = dataW_x_detaMean_NxCx1.view(N, C)
 
         # the denominator term
+        # y_s: torch.Size([1, 9, 1])
         # import pdb; pdb.set_trace()
         aug_result = y_s.unsqueeze(-1) + 0.5 * sigma2 + Lambda * datW_x_detaMean_NxC
 
+        # import pdb; pdb.set_trace()
         return aug_result # (num_src_labels, class_num)
 
     # deformable detr
@@ -957,7 +984,7 @@ class SetCriterion(nn.Module):
 
         return intra_loss.cuda(), inter_loss.cuda()
 
-    def forward(self, outputs, targets):
+    def forward(self, outputs, targets, mode='train'):
         """ This performs the loss computation.
         Parameters:
              outputs: dict of tensors, see the output specification of the model for the format
@@ -968,13 +995,13 @@ class SetCriterion(nn.Module):
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
 
         # TODO we only want to load source targets
-        if self.mode == 'train':
+        if mode == 'train':
             targets = targets[:len(targets)//2]
-        elif self.mode == 'test':
+        elif mode == 'test':
             pass
         else:
             raise NotImplementedError
-            
+
         # import pdb; pdb.set_trace()
         # Retrieve the matching between the outputs of the last layer and the targets
         indices = self.matcher(outputs_without_aux, targets)
@@ -1046,10 +1073,24 @@ class SetCriterion(nn.Module):
         if self.feat_aug:
             mean_source = outputs['prototypes']['src_prototypes']
             mean_target = outputs['prototypes']['tgt_prototypes']
-            aug_y = self.aug(mean_source, mean_target, outputs['fc'], outputs['features_source'], outputs['y_s'], outputs['source_labels'], outputs['covariance_target'], self.Lamda)
-            
+
             src_labels = torch.as_tensor(outputs['source_labels']).view(-1).cuda()
-            loss = self.cross_entropy(aug_y, src_labels) # 
+
+            # if len(src_labels)==0:
+            #     import pdb; pdb.set_trace()
+            #     aug_y = self.aug(mean_source, mean_target, outputs['fc'], outputs['features_source'], outputs['y_s'], outputs['source_labels'], outputs['covariance_target'], self.Lamda)
+            aug_y = self.aug(mean_source, mean_target, outputs['fc'], outputs['features_source'], outputs['y_s'], outputs['source_labels'], outputs['covariance_target'], self.Lamda)
+
+            if len(src_labels)==0:
+                # import pdb; pdb.set_trace()
+                src_labels = torch.zeros((9), device='cuda', dtype=torch.int64)
+
+            # import pdb; pdb.set_trace()
+            loss = self.cross_entropy(aug_y, src_labels)
+
+            if len(src_labels)==0:
+                loss = loss*0.0001
+
             losses[f'loss_aug'] = loss
 
             # TODO this should probably be a separate loss, not hacked in this one here
