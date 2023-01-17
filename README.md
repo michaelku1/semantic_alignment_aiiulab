@@ -14,3 +14,6 @@ CUDA_VISIBLE_DEVICES=0 GPUS_PER_NODE=1 ./tools/run_dist_launch.sh 1 --master_por
 
 CUDA_VISIBLE_DEVICES=0 GPUS_PER_NODE=1 ./tools/run_dist_launch.sh 1 --master_port 29110 python main.py --config_file configs/contrastive.yaml --opts OUTPUT_DIR ./exps/exp1/contrastive TRAIN.EPOCHS 100 DATASET.NUM_CLASSES 9 TRAIN.BATCH_SIZE 2 FINETUNE False RESUME ${MDOEL_CHECKPONIT_PATH.pth} EVAL True
 
+## cross-scale
+
+
