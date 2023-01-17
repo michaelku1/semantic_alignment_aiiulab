@@ -90,8 +90,7 @@ def main(cfg):
 
     dataset_train = build_dataset(image_set='train', cfg=cfg)
     dataset_val = build_dataset(image_set='val', cfg=cfg)
-    
-    # import pdb; pdb.set_trace()
+
     
     # TODO sample subset for validation
     # indices = torch.randperm(len(dataset_val))[:200]
@@ -238,7 +237,7 @@ def main(cfg):
         model_without_ddp.detr.load_state_dict(checkpoint['model'])
 
     output_dir = Path(cfg.OUTPUT_DIR)
-    if cfg.RESUME: # [BUG] write after freezing cfgs
+    if cfg.RESUME and not cfg.FINETUNE: # [BUG] write after freezing cfgs
         if cfg.RESUME.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
                 cfg.RESUME, map_location='cpu', check_hash=True)
@@ -250,10 +249,11 @@ def main(cfg):
             print('Missing Keys: {}'.format(missing_keys))
         if len(unexpected_keys) > 0:
             print('Unexpected Keys: {}'.format(unexpected_keys))
+
         if not cfg.EVAL and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
             import copy
             p_groups = copy.deepcopy(optimizer.param_groups)
-            # optimizer.load_state_dict(checkpoint['optimizer'])
+            optimizer.load_state_dict(checkpoint['optimizer'])
             for pg, pg_old in zip(optimizer.param_groups, p_groups):
                 pg['lr'] = pg_old['lr']
                 pg['initial_lr'] = pg_old['initial_lr']
@@ -276,7 +276,19 @@ def main(cfg):
         #     )
 
     # TODO: for retraining
-    elif cfg.FINETUNE:
+    elif cfg.FINETUNE and cfg.RESUME:
+        if cfg.RESUME.startswith('https'):
+            checkpoint = torch.hub.load_state_dict_from_url(
+                cfg.RESUME, map_location='cpu', check_hash=True)
+        else:
+            checkpoint = torch.load(cfg.RESUME, map_location='cpu')
+        missing_keys, unexpected_keys = model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
+        unexpected_keys = [k for k in unexpected_keys if not (k.endswith('total_params') or k.endswith('total_ops'))]
+        if len(missing_keys) > 0:
+            print('Missing Keys: {}'.format(missing_keys))
+        if len(unexpected_keys) > 0:
+            print('Unexpected Keys: {}'.format(unexpected_keys))
+
         if checkpoint['epoch']:
             START_EPOCH = checkpoint['epoch'] + 1
         else:
