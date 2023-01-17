@@ -16,4 +16,4 @@ CUDA_VISIBLE_DEVICES=0 GPUS_PER_NODE=1 ./tools/run_dist_launch.sh 1 --master_por
 
 ## cross-scale
 
-
+CUDA_VISIBLE_DEVICES=4 GPUS_PER_NODE=1 ./tools/run_dist_launch.sh 1 --master_port 29111 python main.py --config_file configs/contrastive.yaml --opts OUTPUT_DIR ./exps/test TRAIN.EPOCHS 150 DATASET.NUM_CLASSES 4 TRAIN.BATCH_SIZE 2 MODEL.STAGE train_AQT EMA True DATASET.DA_MODE uda MODEL.NUM_FEATURE_LEVELS 4
