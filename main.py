@@ -30,7 +30,6 @@ from engine import evaluate, train_one_epoch
 from models import build_model
 from config import get_cfg_defaults
 
-
 def setup(args):
     cfg = get_cfg_defaults()
     if args.config_file:
@@ -138,7 +137,6 @@ def main(cfg):
     for n, p in model_without_ddp.named_parameters():
         print(n)
 
-
     if cfg.MODEL.STAGE == 'train_AQT':
         param_dicts = [
             {
@@ -156,12 +154,26 @@ def main(cfg):
                 "lr": cfg.TRAIN.LR * cfg.TRAIN.LR_LINEAR_PROJ_MULT,
             }
         ]
-
-    # TODO freeze decoder
+    
+    # TODO freeze everywhere except encoder
     elif cfg.MODEL.STAGE == 'train_encoder':
+        trainable_layer = []
         for n, p in model_without_ddp.named_parameters():
-            if match_name_keywords(n, ['decoder']):
+            if match_name_keywords(n, ['encoder']):
+                p.requires_grad_(True)
+                trainable_layer.append(n)
+            else:
                 p.requires_grad_(False)
+        frozen_layer = []
+        # TODO freeze space and channel discriminators
+        for n, p in model_without_ddp.named_parameters():
+            if match_name_keywords(n, ['space_attn', 'channel_attn', 'space_D', 'channel_D']):
+                p.requires_grad_(False)
+                frozen_layer.append(n)
+
+        # print(trainable_layer)
+        # print(frozen_layer)
+        # quit()
                 
         # TODO everything else kept the same
         param_dicts = [
@@ -190,7 +202,9 @@ def main(cfg):
 
     elif cfg.MODEL.STAGE == 'train_decoder':
         for n, p in model_without_ddp.named_parameters():
-            if match_name_keywords(n, ['encoder']):
+            if match_name_keywords(n, ['decoder']):
+                p.requires_grad_(True)
+            else:
                 p.requires_grad_(False)
 
         param_dicts = [
@@ -221,6 +235,7 @@ def main(cfg):
                                       weight_decay=cfg.TRAIN.WEIGHT_DECAY)
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, cfg.TRAIN.LR_DROP)
 
+    # model DDP
     if cfg.DIST.DISTRIBUTED:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[cfg.DIST.GPU])
         model_without_ddp = model.module
@@ -316,14 +331,16 @@ def main(cfg):
         if cfg.DIST.DISTRIBUTED:
             sampler_train.set_epoch(epoch)
         
-        # TODO: probe probs
+        # TODO: probe probs, boxes
         if cfg.ACCUMULATE_STATS:
             train_stats, cur_iter, probs = train_one_epoch(
-                model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS, total_iter, cfg.TRAIN.CLIP_MAX_NORM)
+                model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS, total_iter,
+                base_ds, postprocessors, postprocessors_target, cfg.TRAIN.CLIP_MAX_NORM)
         
         else:
             train_stats, cur_iter = train_one_epoch(
-                model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS, total_iter, cfg.TRAIN.CLIP_MAX_NORM)
+                model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS, total_iter,
+                base_ds, postprocessors, postprocessors_target, cfg.TRAIN.CLIP_MAX_NORM)
         
         total_iter = cur_iter # TODO update total_iter after each training epoch
         
