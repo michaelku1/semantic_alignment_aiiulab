@@ -22,6 +22,7 @@ import util.misc as utils
 from datasets.coco_eval import CocoEvaluator
 from datasets.panoptic_eval import PanopticEvaluator
 from datasets.data_prefetcher import data_prefetcher
+from util.box_ops import plot_bbox
 
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
@@ -82,7 +83,10 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 
 @torch.no_grad()
-def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir):
+def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir, cfg, **kwargs):
+    """
+    data_loader.dataset: `CocoDetection`, not `DADataset`
+    """
     model.eval()
     criterion.eval()
 
@@ -127,6 +131,19 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
             target_sizes = torch.stack([t["size"] for t in targets], dim=0)
             results = postprocessors['segm'](results, outputs, orig_target_sizes, target_sizes)
         res = {target['image_id'].item(): output for target, output in zip(targets, results)}
+
+        # plot pseudo boxes
+        if kwargs['plot_box']:
+            plot_bbox(
+                coco_evaluator.coco_gt,
+                res,
+                data_loader.dataset.root,
+                box_save_dir=cfg.PLOT.BOX_SAVE_DIR,
+                score_threshold=cfg.PLOT.SCORE_THRESHOLD,
+                img_ids=cfg.PLOT.IMG_IDS,
+                prefix=kwargs['prefix']
+            )
+
         if coco_evaluator is not None:
             coco_evaluator.update(res)
 

@@ -196,16 +196,16 @@ def main(cfg):
                 lr_scheduler.step_size = cfg.TRAIN.LR_DROP
                 lr_scheduler.base_lrs = list(map(lambda group: group['initial_lr'], optimizer.param_groups))
             lr_scheduler.step(lr_scheduler.last_epoch)
-            cfg.START_EPOCH = checkpoint['epoch'] + 1 
+            START_EPOCH = checkpoint['epoch'] + 1 
         # check the resumed model
         if not cfg.EVAL:
             test_stats, coco_evaluator = evaluate(
-                model, criterion, postprocessors, data_loader_val, base_ds, device, cfg.OUTPUT_DIR
+                model, criterion, postprocessors, data_loader_val, base_ds, device, cfg.OUTPUT_DIR, cfg, plot_box=False
             )
     
     if cfg.EVAL:
         test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                              data_loader_val, base_ds, device, cfg.OUTPUT_DIR)
+                                              data_loader_val, base_ds, device, cfg.OUTPUT_DIR, cfg, plot_box=True, prefix='eval')
         if cfg.OUTPUT_DIR:
             utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
         return
@@ -233,7 +233,7 @@ def main(cfg):
                 }, checkpoint_path)
 
         test_stats, coco_evaluator = evaluate(
-            model, criterion, postprocessors, data_loader_val, base_ds, device, cfg.OUTPUT_DIR
+            model, criterion, postprocessors, data_loader_val, base_ds, device, cfg.OUTPUT_DIR, cfg, plot_box=True, prefix=f'epoch={epoch}'
         )
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},

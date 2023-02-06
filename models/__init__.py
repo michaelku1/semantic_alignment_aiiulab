@@ -9,7 +9,8 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 # ------------------------------------------------------------------------
 
-from .deformable_detr import build
+# from .deformable_detr import build
+from .deformable_detr_test2 import build
 
 
 def build_model(cfg):

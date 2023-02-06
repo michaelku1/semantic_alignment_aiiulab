@@ -190,9 +190,9 @@ class DeformableTransformer(nn.Module):
             #mask_flatten=[2,42*84]
             #mask_flatten=[2,21*42]
             #mask_flatten=[2,11*21]
-            breakpoint()
+            # breakpoint()
  
-        src_flatten = torch.cat(src_flatten, 1)
+        src_flatten = torch.cat(src_flatten, 1)  # cat so that attention can be computed across multi-scale features
         mask_flatten = torch.cat(mask_flatten, 1)
         lvl_pos_embed_flatten = torch.cat(lvl_pos_embed_flatten, 1)
         spatial_shapes = torch.as_tensor(spatial_shapes, dtype=torch.long, device=src_flatten.device)
@@ -200,7 +200,7 @@ class DeformableTransformer(nn.Module):
         valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)
 
         space_query, channel_query, instance_query = None, None, None
-   
+
         if self.training:
             if self.space_align:
                 space_query = self.space_query.expand(src_flatten.shape[0], -1, -1) #expand : back to original batch size
@@ -214,7 +214,6 @@ class DeformableTransformer(nn.Module):
         memory, space_query, channel_query = self.encoder(
             src_flatten, space_query, channel_query, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten, mask_flatten
         )
-
 
         da_output = {}
         if self.training:
@@ -253,11 +252,9 @@ class DeformableTransformer(nn.Module):
             instance_query = self.instance_query.expand(tgt.shape[0], -1, -1)
 
         # decoder
-
         hs, inter_references, instance_query = self.decoder(
             tgt, instance_query, reference_points, memory, spatial_shapes, level_start_index, valid_ratios, query_embed, mask_flatten
         )
-
 
         if self.training and self.instance_align:
             da_output['instance_query'] = instance_query
@@ -354,8 +351,7 @@ class DeformableTransformerEncoderLayer(nn.Module):
 
         if self.training:
             if self.space_align:
-#               space_query = torch.utils.checkpoint.checkpoint(self.space_attn, space_query, src, pos, padding_mask)
-                space_query = self.space_attn(space_query, src, pos, padding_mask)
+                space_query = self.space_attn(space_query, src, pos, padding_mask)  # space query is updated while src & pos remains
             if self.channel_align:
                 src_warped, pos_warped = remove_mask_and_warp(src, pos, padding_mask, level_start_index, spatial_shapes)   
                 
@@ -366,7 +362,6 @@ class DeformableTransformerEncoderLayer(nn.Module):
                 )
                 
 #              channel_query = torch.utils.checkpoint.checkpoint(self.channel_attn, channel_query, src_warped.flatten(0, 1).transpose(1, 2), pos_warped.flatten(0, 1).transpose(1, 2))
-                
 
         # ffn
         src2 = self.ffn_e1(src)
@@ -383,8 +378,6 @@ class DeformableTransformerEncoder(nn.Module):
         super().__init__()
         self.layers = _get_clones(encoder_layer, num_layers)
         self.num_layers = num_layers
-
-    
 
     @staticmethod
     def get_reference_points(spatial_shapes, valid_ratios, device):
@@ -416,8 +409,8 @@ class DeformableTransformerEncoder(nn.Module):
             output, space_query, channel_query = layer(
                 output, space_query, channel_query, pos, reference_points, spatial_shapes, level_start_index, padding_mask
             )
-            space_querys.append(space_query)
-            channel_querys.append(channel_query)
+            space_querys.append(space_query)  # collect space queries from different layers
+            channel_querys.append(channel_query)  # collect channel queries from different layers
 
         return output, space_querys, channel_querys
 

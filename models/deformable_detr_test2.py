@@ -180,48 +180,47 @@ class DeformableDETR(nn.Module):
 
         ########linear projection############
         for l, feat in enumerate(features):
-            #output of backbone
-            #feat.tensors=[2,512,84,167]
-            #feat.tensors=[2,1024,42,84]
-            #feat.tensors=[2,2048,21,42]
-
+            # output of backbone
+            # feat.tensors=[2,512,84,167]
+            # feat.tensors=[2,1024,42,84]
+            # feat.tensors=[2,2048,21,42]
             
             src, mask = feat.decompose()
-            #src=[2,512,84,167] [2,1024,42,84] [2,2048,42,84]
-            #mask=[2,84,167] [2,42,84] [2,21,42]
+            # src=[2,512,84,167] [2,1024,42,84] [2,2048,42,84]
+            # mask=[2,84,167] [2,42,84] [2,21,42]
 
             srcs.append(self.input_proj[l](src))
-            #feat after linear_proj (channel --> 256)
-            #srcs[0]=[2,256,84,167]
-            #srcs[1]=[2,256,42,84]
-            #srcs[2]=[2,256,21,42]
+            # feat after linear_proj (channel --> 256)
+            # srcs[0]=[2,256,84,167]
+            # srcs[1]=[2,256,42,84]
+            # srcs[2]=[2,256,21,42]
 
             '''
             self.input_proj=ModuleList(
-                                        (0): Sequential(
-                                            (0): Conv2d(512, 256, kernel_size=(1, 1), stride=(1, 1))
-                                            (1): GroupNorm(32, 256, eps=1e-05, affine=True)
-                                        )
-                                        (1): Sequential(
-                                            (0): Conv2d(1024, 256, kernel_size=(1, 1), stride=(1, 1))
-                                            (1): GroupNorm(32, 256, eps=1e-05, affine=True)
-                                        )
-                                        (2): Sequential(
-                                            (0): Conv2d(2048, 256, kernel_size=(1, 1), stride=(1, 1))
-                                            (1): GroupNorm(32, 256, eps=1e-05, affine=True)
-                                        )
-                                        (3): Sequential(
-                                            (0): Conv2d(2048, 256, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
-                                            (1): GroupNorm(32, 256, eps=1e-05, affine=True)
-                                        )
-                                    )
+                (0): Sequential(
+                    (0): Conv2d(512, 256, kernel_size=(1, 1), stride=(1, 1))
+                    (1): GroupNorm(32, 256, eps=1e-05, affine=True)
+                )
+                (1): Sequential(
+                    (0): Conv2d(1024, 256, kernel_size=(1, 1), stride=(1, 1))
+                    (1): GroupNorm(32, 256, eps=1e-05, affine=True)
+                )
+                (2): Sequential(
+                    (0): Conv2d(2048, 256, kernel_size=(1, 1), stride=(1, 1))
+                    (1): GroupNorm(32, 256, eps=1e-05, affine=True)
+                )
+                (3): Sequential(
+                    (0): Conv2d(2048, 256, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
+                    (1): GroupNorm(32, 256, eps=1e-05, affine=True)
+                )
+            )
             '''
-            masks.append(mask)
-            #masks[0]=[2,84,167]
-            #masks[1]=[2,42,84]
-            #masks[2]=[2,21,42]
-            assert mask is not None
 
+            masks.append(mask)
+            # masks[0]=[2,84,167]
+            # masks[1]=[2,42,84]
+            # masks[2]=[2,21,42]
+            assert mask is not None
 
         if self.num_feature_levels > len(srcs):
             _len_srcs = len(srcs)
@@ -233,53 +232,45 @@ class DeformableDETR(nn.Module):
                 m = samples.mask
                 mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
 
-                pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype) # src --> input_img  mask --> mask
+                pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)  # src --> input_img  mask --> mask
 
                 srcs.append(src)
-                #srcs[0]=[2,256,84,167]
-                #srcs[1]=[2,256,42,84]
-                #srcs[2]=[2,256,21,42]
-                #srcs[3]=[2,256,11,21]
+                # srcs[0]=[2,256,84,167]
+                # srcs[1]=[2,256,42,84]
+                # srcs[2]=[2,256,21,42]
+                # srcs[3]=[2,256,11,21]
                 masks.append(mask)
-                #masks[0]=[2,84,167]
-                #masks[1]=[2,42,84]
-                #masks[2]=[2,21,42]
-                #masks[3]=[2,11,21]
+                # masks[0]=[2,84,167]
+                # masks[1]=[2,42,84]
+                # masks[2]=[2,21,42]
+                # masks[3]=[2,11,21]
                 pos.append(pos_l)
-                #pos[0]=[2,256,84,167]
-                #pos[1]=[2,256,42,84]
-                #pos[2]=[2,256,21,42]
-                #pos[3]=[2,256,11,21]
- 
+                # pos[0]=[2,256,84,167]
+                # pos[1]=[2,256,42,84]
+                # pos[2]=[2,256,21,42]
+                # pos[3]=[2,256,11,21]
         ######################################
+
         query_embeds = None
         if not self.two_stage:
             query_embeds = self.query_embed.weight #[300,512]
 
-#       hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output = cp.checkpoint(self.transformer, (srcs, masks, pos, query_embeds))
-
-    
+        # hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output = cp.checkpoint(self.transformer, (srcs, masks, pos, query_embeds))
         hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output = self.transformer(srcs, masks, pos, query_embeds)
- 
-#       print("111", hs.requires_grad)
-#       hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output = cp.checkpoint(self.transformer, srcs, masks, pos, query_embeds)
-#       print("222", hs.requires_grad)
 
-
-        ######important
-        #hs = output of decoder
-        #da_output = dictionary(all query tokens:space, channel, instance)
+        # hs = output of decoder
+        # da_output = dictionary(all query tokens:space, channel, instance)
 
         outputs_classes = []
         outputs_coords = []
-        ##predict coordinate_offset(tmp)
+        # predict coordinate_offset (tmp)
         for lvl in range(hs.shape[0]):
             if lvl == 0:
                 reference = init_reference
             else:
                 reference = inter_references[lvl - 1]
             reference = inverse_sigmoid(reference)
-            outputs_class = self.class_embed[lvl](hs[lvl]) #predict class
+            outputs_class = self.class_embed[lvl](hs[lvl])  # predict class
             tmp = self.bbox_embed[lvl](hs[lvl])
             if reference.shape[-1] == 4:
                 tmp += reference
@@ -292,11 +283,10 @@ class DeformableDETR(nn.Module):
         outputs_class = torch.stack(outputs_classes)
         outputs_coord = torch.stack(outputs_coords)
 
-
         if self.training and self.uda:
             B = outputs_class.shape[1]
 
-            #only take source img to train(confident, bbox)
+            # only take source img to train(confident, bbox)
             outputs_class = outputs_class[:, :B//2]
             outputs_coord = outputs_coord[:, :B//2]
             
@@ -306,11 +296,11 @@ class DeformableDETR(nn.Module):
             if self.backbone_align:
                 da_output['backbone'] = torch.cat([self.backbone_D(self.grl(src.flatten(2).transpose(1, 2))) for src in srcs], dim=1) #src = sorce_img
             if self.space_align:
-                da_output['space_query'] = self.space_D(da_output['space_query']) #discriminator
+                da_output['space_query'] = self.space_D(da_output['space_query'])  # discriminator
             if self.channel_align:
-                da_output['channel_query'] = self.channel_D(da_output['channel_query']) #discriminator
+                da_output['channel_query'] = self.channel_D(da_output['channel_query'])  # discriminator
             if self.instance_align:
-                da_output['instance_query'] = self.instance_D(da_output['instance_query']) #discriminator
+                da_output['instance_query'] = self.instance_D(da_output['instance_query'])  # discriminator
 
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
         if self.aux_loss:
@@ -333,8 +323,7 @@ class DeformableDETR(nn.Module):
         return [{'pred_logits': a, 'pred_boxes': b}
                 for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
 
-####important
-#define new loss function
+# define new loss function
 class SetCriterion(nn.Module):
     """ This class computes the loss for DETR.
     The process happens in two steps:
@@ -528,7 +517,7 @@ class SetCriterion(nn.Module):
                     l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
 
-        #We don't need this(Two stage)
+        # We don't need this(Two stage)
         if 'enc_outputs' in outputs:
             enc_outputs = outputs['enc_outputs']
             bin_targets = copy.deepcopy(targets)
@@ -566,22 +555,35 @@ class PostProcess(nn.Module): ##Only use in eval
                           For evaluation, this must be the original image size (before any data augmentation)
                           For visualization, this should be the image size after data augment, but before padding
         """
+        # outputs: {
+        #     'pred_logits': torch.FloatTensor(),  # (bz, 300, 9)
+        #     'pred_boxes': torch.FloatTensor(),  # (bz, 300, 4), 0 < coordinate < 1
+        #     'aux_outputs': [
+        #         {'pred_logits': torch.FloatTensor(), 'pred_boxes': torch.FloatTensor()},
+        #         {'pred_logits': torch.FloatTensor(), 'pred_boxes': torch.FloatTensor()},
+        #         {'pred_logits': torch.FloatTensor(), 'pred_boxes': torch.FloatTensor()},
+        #         {'pred_logits': torch.FloatTensor(), 'pred_boxes': torch.FloatTensor()},
+        #         {'pred_logits': torch.FloatTensor(), 'pred_boxes': torch.FloatTensor()},
+        #     ]
+        # }
+        # target_sizes: tensor([[1024, 2048], [1024, 2048]], device='cuda:0')
+
         out_logits, out_bbox = outputs['pred_logits'], outputs['pred_boxes']
 
         assert len(out_logits) == len(target_sizes)
         assert target_sizes.shape[1] == 2
 
-        prob = out_logits.sigmoid()
-        topk_values, topk_indexes = torch.topk(prob.view(out_logits.shape[0], -1), 100, dim=1)
-        scores = topk_values
-        topk_boxes = topk_indexes // out_logits.shape[2]
-        labels = topk_indexes % out_logits.shape[2]
-        boxes = box_ops.box_cxcywh_to_xyxy(out_bbox) #important : coordinate(x, y) --> to real image coordinate
-        boxes = torch.gather(boxes, 1, topk_boxes.unsqueeze(-1).repeat(1,1,4))
+        prob = out_logits.sigmoid()  # (bz, 300, 9), #boxes=300, #classes=9
+        topk_values, topk_indexes = torch.topk(prob.view(out_logits.shape[0], -1), 100, dim=1)  # (bz, 100), (bz, 100)
+        scores = topk_values  # (bz, 100)
+        topk_boxes = topk_indexes // out_logits.shape[2]  # (bz, 100), topk_indexes // 9
+        labels = topk_indexes % out_logits.shape[2]  # (bz, 100), topk_indexes % 9
+        boxes = box_ops.box_cxcywh_to_xyxy(out_bbox)  # (bz, 300, 4)
+        boxes = torch.gather(boxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 4))  # (bz, 100, 4)
 
         # and from relative [0, 1] to absolute [0, height] coordinates
-        img_h, img_w = target_sizes.unbind(1)
-        scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1)
+        img_h, img_w = target_sizes.unbind(1)  # tensor([1024, 1024], device='cuda:0'), tensor([2048, 2048], device='cuda:0')
+        scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1)  # tensor([[2048, 1024, 2048, 1024], [2048, 1024, 2048, 1024]], device='cuda:0')
         boxes = boxes * scale_fct[:, None, :]
 
         results = [{'scores': s, 'labels': l, 'boxes': b} for s, l, b in zip(scores, labels, boxes)]

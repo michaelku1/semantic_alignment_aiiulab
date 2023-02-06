@@ -121,6 +121,14 @@ _C.EVAL = False
 _C.NUM_WORKERS = 2
 _C.CACHE_MODE = False # whether to cache images on memory
 
+# ------------------------------------------------------------------------
+# Plot box
+# ------------------------------------------------------------------------
+_C.PLOT = CN()
+_C.PLOT.BOX_SAVE_DIR = ''
+_C.PLOT.SCORE_THRESHOLD = 0.5
+_C.PLOT.IMG_IDS  = []
+
 
 def get_cfg_defaults():
   """Get a yacs CfgNode object with default values for my_project."""

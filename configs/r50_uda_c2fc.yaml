@@ -1,7 +1,7 @@
 CACHE_MODE: False
 DATASET:
   COCO_PANOPTIC_PATH: None
-  COCO_PATH: ../datasets
+  COCO_PATH: ./datasets
   DATASET_FILE: cityscapes_to_foggy_cityscapes
   DA_MODE: uda
   NUM_CLASSES: 9
@@ -72,3 +72,7 @@ TRAIN:
   LR_LINEAR_PROJ_NAMES: ['reference_points', 'sampling_offsets']
   SGD: False
   WEIGHT_DECAY: 0.0001
+PLOT:
+  BOX_SAVE_DIR: exps/r50_uda_c2fc/plot_box
+  SCORE_THRESHOLD: 0.6
+  IMG_IDS: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
