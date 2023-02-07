@@ -892,6 +892,11 @@ class SetCriterion(nn.Module):
         source = source.view(-1, source.shape[-1])
         target = target.view(-1, target.shape[-1])
 
+        # avoid initial zero entries
+        if len(torch.nonzero(source.sum(1)==0.)) != 0:
+            source = source[[i.item() for indices in torch.nonzero(source.sum(1)!=0.) for i in indices]]
+            target = target[[i.item() for indices in torch.nonzero(source.sum(1)!=0.) for i in indices]]
+        
         intra_loss = 0
         inter_loss = 0
 
@@ -903,10 +908,6 @@ class SetCriterion(nn.Module):
             tmp_tgt_feat_1 = target[cls_idx, :] # per class prototype
 
             # import pdb; pdb.set_trace()
-            
-            # TODO try not to update the initial zero entries
-            # if torch.abs(tmp_src_feat_1.sum())<1e-5 or torch.abs(tmp_tgt_feat_1.sum())<1e-5:
-            #     continue
 
             # intra
             intra_loss = intra_loss + self.distance(tmp_src_feat_1, tmp_tgt_feat_1)
