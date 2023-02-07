@@ -892,10 +892,10 @@ class SetCriterion(nn.Module):
         source = source.view(-1, source.shape[-1])
         target = target.view(-1, target.shape[-1])
 
-        # avoid initial zero entries
-        if len(torch.nonzero(source.sum(1)==0.)) != 0:
-            source = source[[i.item() for indices in torch.nonzero(source.sum(1)!=0.) for i in indices]]
-            target = target[[i.item() for indices in torch.nonzero(source.sum(1)!=0.) for i in indices]]
+#         # avoid initial zero entries
+#         if len(torch.nonzero(source.sum(1)==0.)) != 0:
+#             source = source[[i.item() for indices in torch.nonzero(source.sum(1)!=0.) for i in indices]]
+#             target = target[[i.item() for indices in torch.nonzero(source.sum(1)!=0.) for i in indices]]
         
         intra_loss = 0
         inter_loss = 0
