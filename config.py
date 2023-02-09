@@ -125,7 +125,7 @@ _C.CACHE_MODE = False # whether to cache images on memory
 # Plot box
 # ------------------------------------------------------------------------
 _C.PLOT = CN()
-_C.PLOT.BOX_SAVE_DIR = ''
+_C.PLOT.PLOT_BBOX = False
 _C.PLOT.SCORE_THRESHOLD = 0.5
 _C.PLOT.IMG_IDS  = []
 
