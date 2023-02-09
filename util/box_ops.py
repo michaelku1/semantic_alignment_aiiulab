@@ -104,7 +104,7 @@ def masks_to_boxes(masks):
 
 
 def plot_bbox(
-    coco_gt,
+    coco,
     res: Dict,
     root_dir: Path,
     box_save_dir: str,
@@ -116,7 +116,7 @@ def plot_bbox(
     if not box_save_dir.exists():
         box_save_dir.mkdir()
 
-    img_ids = img_ids if img_ids is not None else coco_gt.getImgIds()
+    img_ids = img_ids if img_ids is not None else coco.getImgIds()
 
     # BGR colors for all categories
     colors = [
@@ -139,7 +139,7 @@ def plot_bbox(
         if img_id not in img_ids:
             continue
         
-        info = coco_gt.loadImgs(img_id)[0]
+        info = coco.loadImgs(img_id)[0]
         img_path = root_dir / info['file_name']
         img = cv2.imread(str(img_path))
 
@@ -148,7 +148,7 @@ def plot_bbox(
             if score < score_threshold:
                 continue
 
-            label_name = coco_gt.cats[label.item()]['name']
+            label_name = coco.cats[label.item()]['name']
             title = f'{label_name}({score.item():.3f})'
             label_count[label.item()] += 1
 
@@ -166,7 +166,7 @@ def plot_bbox(
 
         x, y = 20, 20
         for label, count in label_count.items():
-            label_name = coco_gt.cats[label]['name']
+            label_name = coco.cats[label]['name']
             msg = f'# {label_name}: {count}'
 
             cv2.rectangle(img, (x, y + 5), (x + 200, y - 11), colors[label], cv2.FILLED)  # text background

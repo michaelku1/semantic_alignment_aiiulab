@@ -27,8 +27,7 @@ from .backbone import build_backbone
 from .matcher import build_matcher
 from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
-#from .deformable_transformer import build_deforamble_transformer #important
-#from .deformable_transformer_test import build_deforamble_transformer
+# from .deformable_transformer import build_deforamble_transformer #important
 from .deformable_transformer_test2 import build_deforamble_transformer
 from .utils import GradientReversal 
 import copy
@@ -145,7 +144,6 @@ class DeformableDETR(nn.Module):
                 nn.init.constant_(layer.bias, 0)
 
     def forward(self, samples: NestedTensor):
-
         """ The forward expects a NestedTensor, which consists of:
                - samples.tensors: batched images, of shape [batch_size x 3 x H x W]
                - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
@@ -163,28 +161,21 @@ class DeformableDETR(nn.Module):
         #samples.tensors=[2,3,666,1332]
         #samples.mask=[2,666,1332]
         if not isinstance(samples, NestedTensor):
-            
             samples = nested_tensor_from_tensor_list(samples)
         
-        features, pos = self.backbone(samples) #features size are different (use mask to resize to same size)
-        #features[0].tensors.shape=[2,512,84,167]
-        #features[1].tensors.shape=[2,1024,42,84]
-        #features[2].tensors.shape=[2,2048,21,42]
-
-        #pos[0].shape=[2,256,84,167]
-        #pos[1].shape=[2,256,42,84]
-        #pos[2].shape=[2,256,21,42]
+        features, pos = self.backbone(samples)  # features size are different (use mask to resize to same size)
+        # features[0].tensors.shape=[2,  512, 84, 167]
+        # features[1].tensors.shape=[2, 1024, 42, 84]
+        # features[2].tensors.shape=[2, 2048, 21, 42]
+        # pos[0].shape=[2, 256, 84, 167]
+        # pos[1].shape=[2, 256, 42, 84]
+        # pos[2].shape=[2, 256, 21, 42]
 
         srcs = []
         masks = []
 
-        ########linear projection############
+        # different layer features
         for l, feat in enumerate(features):
-            # output of backbone
-            # feat.tensors=[2,512,84,167]
-            # feat.tensors=[2,1024,42,84]
-            # feat.tensors=[2,2048,21,42]
-            
             src, mask = feat.decompose()
             # src=[2,512,84,167] [2,1024,42,84] [2,2048,42,84]
             # mask=[2,84,167] [2,42,84] [2,21,42]
@@ -195,31 +186,7 @@ class DeformableDETR(nn.Module):
             # srcs[1]=[2,256,42,84]
             # srcs[2]=[2,256,21,42]
 
-            '''
-            self.input_proj=ModuleList(
-                (0): Sequential(
-                    (0): Conv2d(512, 256, kernel_size=(1, 1), stride=(1, 1))
-                    (1): GroupNorm(32, 256, eps=1e-05, affine=True)
-                )
-                (1): Sequential(
-                    (0): Conv2d(1024, 256, kernel_size=(1, 1), stride=(1, 1))
-                    (1): GroupNorm(32, 256, eps=1e-05, affine=True)
-                )
-                (2): Sequential(
-                    (0): Conv2d(2048, 256, kernel_size=(1, 1), stride=(1, 1))
-                    (1): GroupNorm(32, 256, eps=1e-05, affine=True)
-                )
-                (3): Sequential(
-                    (0): Conv2d(2048, 256, kernel_size=(3, 3), stride=(2, 2), padding=(1, 1))
-                    (1): GroupNorm(32, 256, eps=1e-05, affine=True)
-                )
-            )
-            '''
-
             masks.append(mask)
-            # masks[0]=[2,84,167]
-            # masks[1]=[2,42,84]
-            # masks[2]=[2,21,42]
             assert mask is not None
 
         if self.num_feature_levels > len(srcs):
@@ -249,15 +216,12 @@ class DeformableDETR(nn.Module):
                 # pos[1]=[2,256,42,84]
                 # pos[2]=[2,256,21,42]
                 # pos[3]=[2,256,11,21]
-        ######################################
 
         query_embeds = None
         if not self.two_stage:
-            query_embeds = self.query_embed.weight #[300,512]
+            query_embeds = self.query_embed.weight  # (300, 512)
 
-        # hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output = cp.checkpoint(self.transformer, (srcs, masks, pos, query_embeds))
         hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output = self.transformer(srcs, masks, pos, query_embeds)
-
         # hs = output of decoder
         # da_output = dictionary(all query tokens:space, channel, instance)
 

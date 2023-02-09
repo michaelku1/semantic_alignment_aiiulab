@@ -200,12 +200,12 @@ def main(cfg):
         # check the resumed model
         if not cfg.EVAL:
             test_stats, coco_evaluator = evaluate(
-                model, criterion, postprocessors, data_loader_val, base_ds, device, cfg.OUTPUT_DIR, cfg, plot_box=False
+                model, criterion, postprocessors, data_loader_val, base_ds, device, cfg.OUTPUT_DIR, cfg, plot_bbox=False
             )
     
     if cfg.EVAL:
         test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                              data_loader_val, base_ds, device, cfg.OUTPUT_DIR, cfg, plot_box=True, prefix='eval')
+                                              data_loader_val, base_ds, device, cfg.OUTPUT_DIR, cfg, plot_bbox=cfg.PLOT.PLOT_BBOX, prefix='eval')
         if cfg.OUTPUT_DIR:
             utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
         return
@@ -216,7 +216,8 @@ def main(cfg):
         if cfg.DIST.DISTRIBUTED:
             sampler_train.set_epoch(epoch)
         train_stats = train_one_epoch(
-            model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.CLIP_MAX_NORM)
+            model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.CLIP_MAX_NORM,
+            postprocessors=postprocessors, cfg=cfg, plot_bbox=cfg.PLOT.PLOT_BBOX, prefix=f'Epoch={epoch}')
         lr_scheduler.step()
         if cfg.OUTPUT_DIR:
             checkpoint_paths = [output_dir / 'checkpoint.pth']
@@ -233,7 +234,7 @@ def main(cfg):
                 }, checkpoint_path)
 
         test_stats, coco_evaluator = evaluate(
-            model, criterion, postprocessors, data_loader_val, base_ds, device, cfg.OUTPUT_DIR, cfg, plot_box=True, prefix=f'epoch={epoch}'
+            model, criterion, postprocessors, data_loader_val, base_ds, device, cfg.OUTPUT_DIR, cfg, plot_bbox=True, prefix=f'epoch={epoch}'
         )
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},

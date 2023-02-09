@@ -16,6 +16,7 @@ import math
 import os
 import sys
 from typing import Iterable
+from pathlib import Path
 
 import torch
 import util.misc as utils
@@ -27,7 +28,8 @@ from util.box_ops import plot_bbox
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
-                    device: torch.device, epoch: int, max_norm: float = 0):
+                    device: torch.device, epoch: int, max_norm: float = 0,
+                    postprocessors=None, cfg=None, **kwargs):
     model.train()
     criterion.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -39,8 +41,20 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
     prefetcher = data_prefetcher(data_loader, device, prefetch=True)
     samples, targets = prefetcher.next()
+    # samples: NestedTensor
+    #     tensor: (2, 3, 666, 1332)
+    #     mask: (2, 666, 1332)
+    # targets: [{
+    #     'boxes': (21, 4),
+    #     'labels': (21,),
+    #     'image_id': (1,),
+    #     'area': (21,),
+    #     'iscrowd': (21,),
+    #     'orig_size': (2,),
+    #     'size': (2)
+    # }]
 
-    # for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
+    res = {}
     for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):
         outputs = model(samples)
         loss_dict = criterion(outputs, targets)
@@ -74,6 +88,22 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         metric_logger.update(class_error=loss_dict_reduced['class_error'])
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(grad_norm=grad_total_norm)
+
+        # ↓↓↓ plot pseudo boxes ↓↓↓
+        if kwargs['plot_bbox']:
+            orig_target_sizes = torch.stack([t["orig_size"] for t in targets], dim=0)
+            results = postprocessors['bbox'](outputs, orig_target_sizes)
+            res = {target['image_id'].item(): output for target, output in zip(targets, results)}
+            plot_bbox(
+                coco=data_loader.dataset.target.coco,
+                res=res,
+                root_dir=data_loader.dataset.target.root,
+                box_save_dir=Path(cfg.OUTPUT_DIR) / 'plot_bbox',
+                score_threshold=cfg.PLOT.SCORE_THRESHOLD,
+                img_ids=cfg.PLOT.IMG_IDS,
+                prefix=kwargs['prefix']
+            )
+        # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
 
         samples, targets = prefetcher.next()
     # gather the stats from all processes
@@ -132,17 +162,18 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
             results = postprocessors['segm'](results, outputs, orig_target_sizes, target_sizes)
         res = {target['image_id'].item(): output for target, output in zip(targets, results)}
 
-        # plot pseudo boxes
-        if kwargs['plot_box']:
+        # ↓↓↓ plot pseudo boxes ↓↓↓
+        if kwargs['plot_bbox']:
             plot_bbox(
-                coco_evaluator.coco_gt,
-                res,
-                data_loader.dataset.root,
-                box_save_dir=cfg.PLOT.BOX_SAVE_DIR,
+                coco=coco_evaluator.coco_gt,
+                res=res,
+                root_dir=data_loader.dataset.root,
+                box_save_dir=Path(cfg.OUTPUT_DIR) / 'plot_bbox',
                 score_threshold=cfg.PLOT.SCORE_THRESHOLD,
                 img_ids=cfg.PLOT.IMG_IDS,
                 prefix=kwargs['prefix']
             )
+        # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
 
         if coco_evaluator is not None:
             coco_evaluator.update(res)
