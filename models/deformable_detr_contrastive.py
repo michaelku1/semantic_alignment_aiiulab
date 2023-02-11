@@ -36,7 +36,7 @@ from .deformable_transformer_contrastive import build_deforamble_transformer
 from .utils import GradientReversal
 import copy
 from .memory_ema import Memory
-from .utils import compute_CV, weighted_aggregate, weighted_aggregate_source
+from .utils import compute_CV, weighted_aggregate, weighted_aggregate_single
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
@@ -63,6 +63,8 @@ class DeformableDETR(nn.Module):
         # TODO: returns updated prototypes
         if ema:
             self.memory = Memory(num_classes, transformer.d_model, keep_rate = keep_rate, num_feature_levels=num_feature_levels)
+        # self.m_items = F.normalize(torch.rand((2*num_feature_levels, num_classes, transformer.d_model), dtype=torch.float), dim=1).cuda()
+        self.m_items = torch.zeros(2*num_feature_levels, num_classes, transformer.d_model).cuda()
 
         self.ema = ema
         self.num_queries = num_queries
@@ -72,7 +74,7 @@ class DeformableDETR(nn.Module):
         self.matcher = HungarianMatcher(cost_class = 2.0, cost_bbox = 5.0, cost_giou = 2.0)
         # import pdb; pdb.set_trace()
         self.num_classes = num_classes
-        # shared linear layer for the classification head
+
         self.class_embed = nn.Linear(hidden_dim, num_classes) # class embeddings
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3) # bbox embeddings
         self.num_feature_levels = num_feature_levels
@@ -258,7 +260,6 @@ class DeformableDETR(nn.Module):
 
             tmp = self.bbox_embed[lvl](hs[lvl]) # mlp layer
 
-
             if reference.shape[-1] == 4:
                 # deformable-detr predicts relative coordinates, unlike detr, which predicts absolute coordinates
                 tmp += reference
@@ -282,7 +283,6 @@ class DeformableDETR(nn.Module):
         # elif scale == 2:
         #     spatial_scale = 1/32.0 # default
 
-        # TODO: inter-, intra- contrastive loss
         if self.training:
             B = outputs_class.shape[1] # get batch size
             assert B == memory.shape[0]
@@ -296,9 +296,9 @@ class DeformableDETR(nn.Module):
             outputs_class_conf = F.softmax(last_layer_out, -1) # (2, 300, 9)
 
             # decreases linearly
-            thresh = 0.9 * max(0.5, 1-(cur_epoch/total_epoch))
+            # thresh = 0.9 * max(0.5, 1-(cur_epoch/total_epoch))
 
-            # thresh = 0.6
+            thresh = 0.6
 
             # # size: [torch.Size([31, 2]), torch.Size([11, 2])]
             # nonzero returns object query index and the argmax of the class distribution
@@ -432,27 +432,24 @@ class DeformableDETR(nn.Module):
                 # rois: torch.Size([31, 256])
                 rois = torchvision.ops.roi_align(memory_reshaped[batch_idx].unsqueeze(0), [rescaled_boxes_enc[batch_idx]], output_size=(7, 7), spatial_scale=1/32.0, aligned=True).mean(3).mean(2)
                 list_of_rois_enc.append(rois)
+
+            # import pdb; pdb.set_trace()
+            src_prototypes_enc, _ = weighted_aggregate_single(B, list_of_labels_enc[:B//2], list_of_rois_enc[:B//2], list_of_scores_enc[:B//2], self.num_classes, self.hidden_dim)
+            tgt_prototypes_enc, _ = weighted_aggregate_single(B, list_of_labels_enc[B//2:], list_of_rois_enc[B//2:], list_of_scores_enc[B//2:], self.num_classes, self.hidden_dim)
             
-            # TODO testing
-            # list_of_rois = [torch.randn((1,256), device='cuda')]
-            # B = 1
             ## weighted aggregate
-            src_prototypes_enc, tgt_prototypes_enc, alpha_values = weighted_aggregate(B, list_of_labels_enc, list_of_rois_enc, list_of_scores_enc, self.num_classes, self.hidden_dim)
-            class_embeds_enc = torch.stack([src_prototypes_enc, tgt_prototypes_enc])
+            # src_prototypes_enc, tgt_prototypes_enc, alpha_values = weighted_aggregate(B, list_of_labels_enc, list_of_rois_enc, list_of_scores_enc, self.num_classes, self.hidden_dim)
+            # unsqueeze for the sake of input dim to memory
+            prototypes = torch.stack([src_prototypes_enc.unsqueeze(0), tgt_prototypes_enc.unsqueeze(0)], dim=1)
 
             if self.ema:
-                #memory monitoring
-                # tracemalloc.start()
-                updated_class_embeds_enc = self.memory(class_embeds_enc)
-                updated_src_prototypes_enc = updated_class_embeds_enc[0]
-                updated_tgt_prototypes_enc = updated_class_embeds_enc[1]
-                
-                # updated_src_prototypes_dec, updated_tgt_prototypes_dec = self.memory(src_prototypes_dec, tgt_prototypes_dec)
-                # print(tracemalloc.get_traced_memory())
-                # # peak memory
-                # if tracemalloc.get_traced_memory()[1] > 5000000000:
-                #     quit()
+                new_memory = self.memory(self.m_items, prototypes)
+                self.m_items = new_memory
+                updated_class_prototypes = new_memory
 
+                updated_src_prototypes_enc = updated_class_prototypes[:,:B//2,:,:]
+                updated_tgt_prototypes_enc = updated_class_prototypes[:,B//2:,:,:]
+            
             else:
                 updated_src_prototypes_enc = src_prototypes_enc
                 updated_tgt_prototypes_enc = tgt_prototypes_enc
@@ -481,13 +478,18 @@ class DeformableDETR(nn.Module):
                 da_output['channel_query'] = self.channel_D(da_output['channel_query'])
             if self.instance_align:
                 da_output['instance_query'] = self.instance_D(da_output['instance_query'])
+
+        # TODO check for nans
+        if torch.isnan(sum(sum(sum(outputs_class[-1])))):
+            import pdb; pdb.set_trace()
         
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
+
 
         # TODO add prototypes to outputs
         if self.training:
             # out['prototypes'] = {'src_prototypes': src_prototypes, 'tgt_prototypes': tgt_prototypes}
-            # TODO: ema update
+            alpha_values = None
             out['prototypes_enc'] = {'src_prototypes_enc': updated_src_prototypes_enc, 'tgt_prototypes_enc': updated_tgt_prototypes_enc, 'alpha_values': alpha_values}
             # out['prototypes_dec'] = {'src_prototypes_dec': updated_src_prototypes_dec, 'tgt_prototypes_dec': updated_tgt_prototypes_dec}
 
@@ -892,28 +894,21 @@ class SetCriterion(nn.Module):
         source = source.view(-1, source.shape[-1])
         target = target.view(-1, target.shape[-1])
 
-#         # avoid initial zero entries
-#         if len(torch.nonzero(source.sum(1)==0.)) != 0:
-#             source = source[[i.item() for indices in torch.nonzero(source.sum(1)!=0.) for i in indices]]
-#             target = target[[i.item() for indices in torch.nonzero(source.sum(1)!=0.) for i in indices]]
-        
         intra_loss = 0
         inter_loss = 0
 
-        # import pdb; pdb.set_trace()
         # TODO for initial source and target zero entries, 
         for cls_idx in range(self.num_classes):
             # i gives a fixed class
             tmp_src_feat_1 = source[cls_idx, :] # per class prototype
             tmp_tgt_feat_1 = target[cls_idx, :] # per class prototype
-
-            # import pdb; pdb.set_trace()
-
+            
             # intra
             intra_loss = intra_loss + self.distance(tmp_src_feat_1, tmp_tgt_feat_1)
 
             # inter takes into account the current and all other classes
             for cls_idx_next in range(cls_idx+1, self.num_classes):
+                # next class features
                 tmp_src_feat_2 = source[cls_idx_next, :]
                 tmp_tgt_feat_2 = target[cls_idx_next, :]
 
@@ -942,7 +937,6 @@ class SetCriterion(nn.Module):
                 #     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
                 #               torch.tensor(0).float().cuda()), 2.0)
 
-                import pdb; pdb.set_trace()
                 ### original implementation
                 inter_loss =  inter_loss + torch.pow(
                     (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin,
@@ -968,7 +962,7 @@ class SetCriterion(nn.Module):
                     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
                               torch.tensor(0).float().cuda()), 2.0)
 
-
+        # import pdb; pdb.set_trace()
         # average over all classes*batch_dim 
         intra_loss = intra_loss / source.shape[0]
 
@@ -1079,8 +1073,8 @@ class SetCriterion(nn.Module):
             intra_loss_enc, inter_loss_enc = self.contrastive_loss(source_enc, target_enc, alpha_values, margin = self.margin)
         
             # import pdb; pdb.set_trace()
-            losses[f'intra_class_enc'] = intra_loss_enc
-            losses[f'inter_class_enc'] = inter_loss_enc
+            losses['loss_intra_class_enc'] = intra_loss_enc
+            losses['loss_inter_class_enc'] = inter_loss_enc
 
         if 'prototypes_dec' in outputs:
             # source and target are lists of class prototypes
