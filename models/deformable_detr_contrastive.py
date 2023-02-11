@@ -938,29 +938,55 @@ class SetCriterion(nn.Module):
                 #               torch.tensor(0).float().cuda()), 2.0)
 
                 ### original implementation
+#                 inter_loss =  inter_loss + torch.pow(
+#                     (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin,
+#                     2) * torch.pow(
+#                     torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2)),
+#                               torch.tensor(0).float().cuda()), 2.0)
+
+#                 inter_loss =  inter_loss + torch.pow(
+#                     (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))) / margin,
+#                     2) * torch.pow(
+#                     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),
+#                               torch.tensor(0).float().cuda()), 2.0)
+
+#                 inter_loss =  inter_loss + torch.pow(
+#                     (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2))) / margin,
+#                     2) * torch.pow(
+#                     torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),
+#                               torch.tensor(0).float().cuda()), 2.0)
+
+#                 inter_loss =  inter_loss + torch.pow(
+#                     (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2))) / margin,
+#                     2) * torch.pow(
+#                     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
+#                               torch.tensor(0).float().cuda()), 2.0)
+                
+                ### testing
                 inter_loss =  inter_loss + torch.pow(
-                    (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin,
+                    (margin - (self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin,
                     2) * torch.pow(
-                    torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2)),
+                    torch.max(margin - (self.distance(tmp_src_feat_1, tmp_src_feat_2)),
                               torch.tensor(0).float().cuda()), 2.0)
 
                 inter_loss =  inter_loss + torch.pow(
-                    (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))) / margin,
+                    (margin - (self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))) / margin,
                     2) * torch.pow(
-                    torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),
+                    torch.max(margin - (self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),
                               torch.tensor(0).float().cuda()), 2.0)
 
                 inter_loss =  inter_loss + torch.pow(
-                    (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2))) / margin,
+                    (margin - (self.distance(tmp_src_feat_1, tmp_tgt_feat_2))) / margin,
                     2) * torch.pow(
-                    torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),
+                    torch.max(margin - (self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),
                               torch.tensor(0).float().cuda()), 2.0)
 
                 inter_loss =  inter_loss + torch.pow(
-                    (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2))) / margin,
+                    (margin - (self.distance(tmp_tgt_feat_1, tmp_src_feat_2))) / margin,
                     2) * torch.pow(
-                    torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
+                    torch.max(margin - (self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
                               torch.tensor(0).float().cuda()), 2.0)
+                
 
         # import pdb; pdb.set_trace()
         # average over all classes*batch_dim 
