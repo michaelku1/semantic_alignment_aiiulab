@@ -12,6 +12,7 @@
 """
 Deformable DETR model and criterion classes.
 """
+from builtins import AssertionError
 import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
@@ -37,7 +38,7 @@ from .deformable_transformer_contrastive import build_deforamble_transformer
 from .utils import GradientReversal, FCDiscriminator, CrossAttention_agg_prototypes, CrossAttention_agg_encoder
 import copy
 from .memory_ema import Memory
-from .utils import compute_CV, weighted_aggregate, weighted_aggregate_single
+from .utils import compute_CV, weighted_aggregate, weighted_aggregate_tmp, find_thresh
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
@@ -60,7 +61,7 @@ class DeformableDETR(nn.Module):
             two_stage: two-stage Deformable DETR
         """
         super().__init__()
-        keep_rate = 0.9
+        keep_rate = 0.996
         # TODO: returns updated prototypes
         if ema:
             # self.memory = Memory(num_classes, transformer.d_model, keep_rate = keep_rate, num_feature_levels=num_feature_levels)
@@ -311,20 +312,22 @@ class DeformableDETR(nn.Module):
             # last_layer_out = outputs_class[-1][B//2:] # bs is after layer num
             last_layer_out = outputs_class[-1]
             ### BUG should we use MLP outputs or last layer softmax outputs
-            outputs_class_conf = F.softmax(last_layer_out, -1) # (2, 300, 9)
+            outputs_class_conf = F.softmax(last_layer_out, -1)[:B//2] # (2, 300, 9)
 
             # default is 0.6
             # thresh = 0.9 * max(0.5, 1-(cur_epoch/total_epoch))
-            thresh = 0.6
-            keep = [torch.nonzero(outputs_class_conf[b]>thresh).unsqueeze(0) for b in range(outputs_class_conf.shape[0])] # batch wise
+            thresh = 0.9
+            # import pdb; pdb.set_trace()
+            # temporary solution to safely avoid empty keep
+            try:
+                keep = [torch.nonzero(outputs_class_conf[b]>thresh).unsqueeze(0) for b in range(outputs_class_conf.shape[0])] # batch wise
+                assert keep[0].numel() != 0 # assert error if empty
+            except AssertionError:
+                # BUG: only valid when only target class confidences are used 
+                keep, thresh = find_thresh(outputs_class_conf, thresh, keep)
             
-            
-            
-            
-            keep = keep[B//2:] # we only need this for tgt
-
-            # if len(keep)==0:
-            #     import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace()
+            # keep = keep[B//2:] # we only need this for tgt
 
             ### multi-scale memory reshape
             memory_reshaped = [] # (B,c,h,w)
@@ -422,10 +425,11 @@ class DeformableDETR(nn.Module):
             ### aggregate src prototypes first
             list_of_src_prototype = []
             for roi_group in list_of_rois_src:
-                src_prototypes_enc, _ = weighted_aggregate_single(B, src_labels, roi_group, src_scores, self.num_classes, self.hidden_dim)
+                src_prototypes_enc, _ = weighted_aggregate_tmp(B, src_labels, roi_group, src_scores, self.num_classes, self.hidden_dim)
                 list_of_src_prototype.append(src_prototypes_enc)
             
             src_prototypes_enc = torch.stack(list_of_src_prototype)
+            src_prototypes_enc = F.normalize(src_prototypes_enc, dim=-1)
 
             ### BUG in case of empty soruce gts, we take src features from memory
             if sum(sum(sum(src_prototypes_enc))) == 0:
@@ -480,7 +484,9 @@ class DeformableDETR(nn.Module):
                 filters = src_prototypes_enc.squeeze(0).unsqueeze(-1).unsqueeze(-1)
                 # (num_rois, num_classes, width, height)
 
-                thresh_mask = 0.8
+                thresh_mask = 0.9
+                # thresh_mask = 0.9 * max(0.5, 1-(cur_epoch/total_epoch))
+
                 output_tensor = F.conv2d(rois_target.squeeze(0), filters).sigmoid()
                 binary_masks =  torch.where(output_tensor>thresh_mask, 1, 0) # (11, 9, 7, 7)
                 
@@ -527,10 +533,12 @@ class DeformableDETR(nn.Module):
             # list_of_weighted_tgt_rois: (11, 256)
             for roi_group in list_of_weighted_tgt_rois:
                 # import pdb; pdb.set_trace()
-                tgt_prototypes_enc, _ = weighted_aggregate_single(B, tgt_labels, roi_group, tgt_scores, self.num_classes, self.hidden_dim)
+                tgt_prototypes_enc, _ = weighted_aggregate_tmp(B, tgt_labels, roi_group, tgt_scores, self.num_classes, self.hidden_dim)
                 list_of_tgt_prototype.append(tgt_prototypes_enc)
                 
             tgt_prototypes_enc = torch.stack(list_of_tgt_prototype)
+            tgt_prototypes_enc = F.normalize(tgt_prototypes_enc, dim=-1)
+
             # stack towards bs size
             prototypes = torch.stack([src_prototypes_enc, tgt_prototypes_enc], dim=1) # torch.Size([scale, bs, class, feat_dim])
 
@@ -726,6 +734,8 @@ class DeformableDETR(nn.Module):
         # discriminator outputs
         if self.training and self.uda:
             out['da_output'] = da_output
+            # TODO testing
+            out['thresh'] = thresh
 
 
         if self.debug:
