@@ -10,7 +10,7 @@
 # ------------------------------------------------------------------------
 
 # from .deformable_detr import build
-from .deformable_detr_test2 import build
+from .deformable_detr_ckp import build
 
 
 def build_model(cfg):

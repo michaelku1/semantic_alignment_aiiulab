@@ -27,8 +27,8 @@ from .backbone import build_backbone
 from .matcher import build_matcher
 from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
-# from .deformable_transformer import build_deforamble_transformer #important
-from .deformable_transformer_test2 import build_deforamble_transformer
+# from .deformable_transformer import build_deforamble_transformer
+from .deformable_transformer_ckp import build_deforamble_transformer
 from .utils import GradientReversal 
 import copy
 

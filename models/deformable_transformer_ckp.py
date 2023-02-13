@@ -17,6 +17,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn, Tensor
 from torch.nn.init import xavier_uniform_, constant_, uniform_, normal_
+from torch.utils.checkpoint import checkpoint
 
 from util.misc import inverse_sigmoid
 from models.ops.modules import MSDeformAttn
@@ -302,7 +303,7 @@ class DeformableTransformerEncoderLayer(nn.Module):
             src2 = self.linear2(self.dropout2(self.activation(self.linear1(src))))
             return src2
         if src.requires_grad:
-            src2 = torch.utils.checkpoint.checkpoint(inner_forward_e1, src)
+            src2 = checkpoint(inner_forward_e1, src)
         else:
             src2 = self.linear2(self.dropout2(self.activation(self.linear1(src))))
         return src2
@@ -312,7 +313,7 @@ class DeformableTransformerEncoderLayer(nn.Module):
             src2 = self.activation(self.linear1(src))
             return src2
         if src.requires_grad:
-            src2 = torch.utils.checkpoint.checkpoint(inner_forward_e1, src)
+            src2 = checkpoint(inner_forward_e1, src)
         else:
             src2 = self.activation(self.linear1(src))
         return src2
@@ -322,7 +323,7 @@ class DeformableTransformerEncoderLayer(nn.Module):
             src2 = self.linear2(src2)
             return src2
         if src2.requires_grad:
-            src2 = torch.utils.checkpoint.checkpoint(inner_forward_e2, src2)
+            src2 = checkpoint(inner_forward_e2, src2)
         else:
             src2 = self.linear2(src2)
         return src2
@@ -332,20 +333,18 @@ class DeformableTransformerEncoderLayer(nn.Module):
             src = self.norm2(src) 
             return src
         if src.requires_grad:
-            src = torch.utils.checkpoint.checkpoint(inner_forward_e3, src)
+            src = checkpoint(inner_forward_e3, src)
         else:
             src = self.norm2(src)
         return src
     '''
     def forward(self, src, space_query, channel_query, pos, reference_points, spatial_shapes, level_start_index, padding_mask=None):
         # self attention
-
+        # src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
         def sa(src, pos, reference_points, spatial_shapes, level_start_index, padding_mask):
             return self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
+        src2 = checkpoint(sa, src, pos, reference_points, spatial_shapes, level_start_index, padding_mask)
         
-        src2 = torch.utils.checkpoint.checkpoint(sa, src, pos, reference_points, spatial_shapes, level_start_index, padding_mask)
-        
-#       src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
         src = src + self.dropout1(src2)
         src = self.norm1(src)
 
@@ -360,8 +359,6 @@ class DeformableTransformerEncoderLayer(nn.Module):
                     src_warped.flatten(0, 1).transpose(1, 2), # bsz * num_feature_levels, C, H*W
                     pos_warped.flatten(0, 1).transpose(1, 2)
                 )
-                
-#              channel_query = torch.utils.checkpoint.checkpoint(self.channel_attn, channel_query, src_warped.flatten(0, 1).transpose(1, 2), pos_warped.flatten(0, 1).transpose(1, 2))
 
         # ffn
         src2 = self.ffn_e1(src)
@@ -448,23 +445,13 @@ class DeformableTransformerDecoderLayer(nn.Module):
     @staticmethod
     def with_pos_embed(tensor, pos):
         return tensor if pos is None else tensor + pos
-    '''
-    def ffn_d1(self,tgt):
-        def inner_forward_d1(tgt):
-            tgt2 = self.linear2(self.dropout2(self.activation(self.linear1(tgt))))
-            return tgt2
-        if tgt.requires_grad:
-            tgt2 = torch.utils.checkpoint.checkpoint(inner_forward_d1, tgt)
-        else:
-            tgt2 = self.linear2(self.dropout2(self.activation(self.linear1(tgt))))
-        return tgt2
-    '''
+        
     def ffn_d1(self,tgt):
         def inner_forward_d1(tgt):
             tgt2 = self.activation(self.linear1(tgt))
             return tgt2
         if tgt.requires_grad:
-            tgt2 = torch.utils.checkpoint.checkpoint(inner_forward_d1, tgt)
+            tgt2 = checkpoint(inner_forward_d1, tgt)
         else:
             tgt2 = self.activation(self.linear1(tgt))
         return tgt2
@@ -474,28 +461,11 @@ class DeformableTransformerDecoderLayer(nn.Module):
             tgt2 = self.linear2(tgt2)
             return tgt2
         if tgt2.requires_grad:
-            tgt2 = torch.utils.checkpoint.checkpoint(inner_forward_d2, tgt2)
+            tgt2 = checkpoint(inner_forward_d2, tgt2)
         else:
             tgt2 = self.linear2(tgt2)
-        return tgt2            
-    '''
-    def ffn_d3(self,tgt):
-        def inner_forward_d3(tgt):
-            tgt = self.norm3(tgt)
-            return tgt
-        if tgt.requires_grad:
-            tgt = torch.utils.checkpoint.checkpoint(inner_forward_d3, tgt)
-        else:
-            tgt = self.norm3(tgt)
-        return tgt
-    '''
-    '''
-    def forward_ffn(self, tgt):
-        tgt2 = self.linear2(self.dropout3(self.activation(self.linear1(tgt))))
-        tgt = tgt + self.dropout4(tgt2)
-        tgt = self.norm3(tgt)
-        return tgt
-    '''
+        return tgt2
+        
     def forward(self, tgt, instance_query, query_pos, reference_points, src, src_spatial_shapes, level_start_index, src_padding_mask=None):
         # self attention
         q = k = self.with_pos_embed(tgt, query_pos)
@@ -513,7 +483,6 @@ class DeformableTransformerDecoderLayer(nn.Module):
 
         if self.training and self.instance_align:
             instance_query = self.instance_attn(instance_query, tgt, query_pos)
-#           instance_query = torch.utils.checkpoint.checkpoint(self.instance_attn, instance_query, tgt, query_pos)
 
         # ffn
         tgt2 = self.ffn_d1(tgt)
