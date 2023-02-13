@@ -36,7 +36,7 @@ from .deformable_transformer_contrastive import build_deforamble_transformer
 from .utils import GradientReversal
 import copy
 from .memory_ema import Memory
-from .utils import compute_CV, weighted_aggregate, weighted_aggregate_single
+from .utils import compute_CV, weighted_aggregate, weighted_aggregate_tmp
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
@@ -293,17 +293,17 @@ class DeformableDETR(nn.Module):
 
 
             ### BUG should we use MLP outputs or last layer softmax outputs
-            outputs_class_conf = F.softmax(last_layer_out, -1) # (2, 300, 9)
-
+            # outputs_class_conf = F.softmax(last_layer_out, -1)[:B//2] # (2, 300, 9)
+            outputs_class_conf = F.softmax(last_layer_out, -1)
             # decreases linearly
             # thresh = 0.9 * max(0.5, 1-(cur_epoch/total_epoch))
 
-            thresh = 0.6
+            thresh = 0.9
 
             # # size: [torch.Size([31, 2]), torch.Size([11, 2])]
             # nonzero returns object query index and the argmax of the class distribution
-            # keep_src = [torch.nonzero(outputs_class_conf[b]>thresh_src).unsqueeze(0) for b in range(outputs_class_conf.shape[0])] # batch wise
             keep = [torch.nonzero(outputs_class_conf[b]>thresh).unsqueeze(0) for b in range(outputs_class_conf.shape[0])] # batch wise
+            # keep = [torch.nonzero(outputs_class_conf[b]>thresh).unsqueeze(0) for b in range(outputs_class_conf.shape[0])] # batch wise
 
             # import pdb; pdb.set_trace()
             ## decoder features
@@ -350,8 +350,13 @@ class DeformableDETR(nn.Module):
 
             # src_prototypes_dec, tgt_prototypes_dec, alpha_values = weighted_aggregate(B, list_of_labels_dec, list_of_rois_dec, list_of_scores_dec, self.num_classes, self.hidden_dim)
 
+            # src_prototypes_dec = F.normalize(src_prototypes_dec, dim=-1)
+            # tgt_prototypes_dec = F.normalize(tgt_prototypes_dec, dim=-1)
+
+            # prototypes = torch.stack([src_prototypes_dec.unsqueeze(0), tgt_prototypes_dec.unsqueeze(0)], dim=1)
+
             ### encoder features
-            # torch.Size([2, 512, 84, 167]), torch.Size([2, 1024, 42, 84]), torch.Size([2, 2048, 21, 42])
+            torch.Size([2, 512, 84, 167]), torch.Size([2, 1024, 42, 84]), torch.Size([2, 2048, 21, 42])
             feature_w = features[0].tensors.shape[-1] # w
             feature_h = features[0].tensors.shape[-2] # h
             feature_c = memory.shape[-1]
@@ -434,8 +439,8 @@ class DeformableDETR(nn.Module):
                 list_of_rois_enc.append(rois)
 
             # import pdb; pdb.set_trace()
-            src_prototypes_enc, _ = weighted_aggregate_single(B, list_of_labels_enc[:B//2], list_of_rois_enc[:B//2], list_of_scores_enc[:B//2], self.num_classes, self.hidden_dim)
-            tgt_prototypes_enc, _ = weighted_aggregate_single(B, list_of_labels_enc[B//2:], list_of_rois_enc[B//2:], list_of_scores_enc[B//2:], self.num_classes, self.hidden_dim)
+            src_prototypes_enc, _ = weighted_aggregate_tmp(B, list_of_labels_enc[:B//2], list_of_rois_enc[:B//2], list_of_scores_enc[:B//2], self.num_classes, self.hidden_dim)
+            tgt_prototypes_enc, _ = weighted_aggregate_tmp(B, list_of_labels_enc[B//2:], list_of_rois_enc[B//2:], list_of_scores_enc[B//2:], self.num_classes, self.hidden_dim)
             
             ## weighted aggregate
             # src_prototypes_enc, tgt_prototypes_enc, alpha_values = weighted_aggregate(B, list_of_labels_enc, list_of_rois_enc, list_of_scores_enc, self.num_classes, self.hidden_dim)
@@ -449,6 +454,8 @@ class DeformableDETR(nn.Module):
 
                 updated_src_prototypes_enc = updated_class_prototypes[:,:B//2,:,:]
                 updated_tgt_prototypes_enc = updated_class_prototypes[:,B//2:,:,:]
+                # updated_src_prototypes_dec = updated_class_prototypes[:,:B//2,:,:]
+                # updated_tgt_prototypes_dec = updated_class_prototypes[:,B//2:,:,:]
             
             else:
                 updated_src_prototypes_enc = src_prototypes_enc
@@ -491,7 +498,7 @@ class DeformableDETR(nn.Module):
             # out['prototypes'] = {'src_prototypes': src_prototypes, 'tgt_prototypes': tgt_prototypes}
             alpha_values = None
             out['prototypes_enc'] = {'src_prototypes_enc': updated_src_prototypes_enc, 'tgt_prototypes_enc': updated_tgt_prototypes_enc, 'alpha_values': alpha_values}
-            # out['prototypes_dec'] = {'src_prototypes_dec': updated_src_prototypes_dec, 'tgt_prototypes_dec': updated_tgt_prototypes_dec}
+            # out['prototypes_dec'] = {'src_prototypes_dec': updated_src_prototypes_dec, 'tgt_prototypes_dec': updated_tgt_prototypes_dec, 'alpha_values': alpha_values}
 
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
@@ -503,6 +510,7 @@ class DeformableDETR(nn.Module):
         # discriminator outputs
         if self.training and self.uda:
             out['da_output'] = da_output
+            out['thresh'] = thresh
 
         # TODO to store things for feat aug
         if self.feat_aug:
@@ -891,6 +899,8 @@ class SetCriterion(nn.Module):
         # intra class: only between source and target
         # inter class: between each class --> three combinations
         # max length is self.num_classes
+
+        # import pdb; pdb.set_trace()
         source = source.view(-1, source.shape[-1])
         target = target.view(-1, target.shape[-1])
 
@@ -938,30 +948,31 @@ class SetCriterion(nn.Module):
                 #               torch.tensor(0).float().cuda()), 2.0)
 
                 ### original implementation
-#                 inter_loss =  inter_loss + torch.pow(
-#                     (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin,
-#                     2) * torch.pow(
-#                     torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2)),
-#                               torch.tensor(0).float().cuda()), 2.0)
+                # inter_loss =  inter_loss + torch.pow(
+                #     (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin,
+                #     2) * torch.pow(
+                #     torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2)),
+                #               torch.tensor(0).float().cuda()), 2.0)
 
-#                 inter_loss =  inter_loss + torch.pow(
-#                     (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))) / margin,
-#                     2) * torch.pow(
-#                     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),
-#                               torch.tensor(0).float().cuda()), 2.0)
+                # inter_loss =  inter_loss + torch.pow(
+                #     (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))) / margin,
+                #     2) * torch.pow(
+                #     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),
+                #               torch.tensor(0).float().cuda()), 2.0)
 
-#                 inter_loss =  inter_loss + torch.pow(
-#                     (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2))) / margin,
-#                     2) * torch.pow(
-#                     torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),
-#                               torch.tensor(0).float().cuda()), 2.0)
+                # inter_loss =  inter_loss + torch.pow(
+                #     (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2))) / margin,
+                #     2) * torch.pow(
+                #     torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),
+                #               torch.tensor(0).float().cuda()), 2.0)
 
-#                 inter_loss =  inter_loss + torch.pow(
-#                     (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2))) / margin,
-#                     2) * torch.pow(
-#                     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
-#                               torch.tensor(0).float().cuda()), 2.0)
-                
+                # inter_loss =  inter_loss + torch.pow(
+                #     (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2))) / margin,
+                #     2) * torch.pow(
+                #     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
+                #               torch.tensor(0).float().cuda()), 2.0)
+
+
                 ### testing
                 inter_loss =  inter_loss + torch.pow(
                     (margin - (self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin,
@@ -986,8 +997,8 @@ class SetCriterion(nn.Module):
                     2) * torch.pow(
                     torch.max(margin - (self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
                               torch.tensor(0).float().cuda()), 2.0)
-                
 
+                
         # import pdb; pdb.set_trace()
         # average over all classes*batch_dim 
         intra_loss = intra_loss / source.shape[0]
@@ -1010,6 +1021,10 @@ class SetCriterion(nn.Module):
 
         # if isinstance(intra_loss, float) or isinstance(inter_loss, float):
         #     import pdb; pdb.set_trace()
+
+        # TODO testing
+        # inter_loss = torch.tensor(0.).cuda()
+        # intra_loss = torch.tensor(0.).cuda()
 
         return intra_loss.cuda(), inter_loss.cuda()
 
@@ -1106,7 +1121,7 @@ class SetCriterion(nn.Module):
             # source and target are lists of class prototypes
             source_dec = outputs['prototypes_dec']['src_prototypes_dec']
             target_dec = outputs['prototypes_dec']['tgt_prototypes_dec']
-            alpha_values = outputs['alpha_values']
+            alpha_values = outputs['prototypes_dec']['alpha_values']
             
             intra_loss_dec, inter_loss_dec = self.contrastive_loss(source_dec, target_dec, alpha_values, margin = self.margin)
 
@@ -1268,10 +1283,10 @@ def build(cfg):
     weight_dict['loss_space_query'] = cfg.LOSS.SPACE_QUERY_LOSS_COEF
     weight_dict['loss_channel_query'] = cfg.LOSS.CHANNEL_QUERY_LOSS_COEF
     weight_dict['loss_instance_query'] = cfg.LOSS.INSTANCE_QUERY_LOSS_COEF
-    weight_dict['loss_inter_class_enc'] = cfg.LOSS.INTER_CLASS_COEF
-    weight_dict['loss_intra_class_enc'] = cfg.LOSS.INTRA_CLASS_COEF
-    # weight_dict['loss_inter_class_dec'] = cfg.LOSS.INTER_CLASS_COEF
-    # weight_dict['loss_intra_class_dec'] = cfg.LOSS.INTRA_CLASS_COEF
+    # weight_dict['loss_inter_class_enc'] = cfg.LOSS.INTER_CLASS_COEF
+    # weight_dict['loss_intra_class_enc'] = cfg.LOSS.INTRA_CLASS_COEF
+    weight_dict['loss_inter_class_dec'] = cfg.LOSS.INTER_CLASS_COEF
+    weight_dict['loss_intra_class_dec'] = cfg.LOSS.INTRA_CLASS_COEF
 
     # put ce/aug loss at the end due to order of compute
     # weight_dict['loss_aug'] = cfg.LOSS.AUG_LOSS_COEF
