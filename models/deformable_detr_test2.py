@@ -538,6 +538,7 @@ class PostProcess(nn.Module): ##Only use in eval
         assert target_sizes.shape[1] == 2
 
         prob = out_logits.sigmoid()  # (bz, 300, 9), #boxes=300, #classes=9
+        # select 100 boxes with high probability in some class 
         topk_values, topk_indexes = torch.topk(prob.view(out_logits.shape[0], -1), 100, dim=1)  # (bz, 100), (bz, 100)
         scores = topk_values  # (bz, 100)
         topk_boxes = topk_indexes // out_logits.shape[2]  # (bz, 100), topk_indexes // 9
@@ -550,6 +551,9 @@ class PostProcess(nn.Module): ##Only use in eval
         scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1)  # tensor([[2048, 1024, 2048, 1024], [2048, 1024, 2048, 1024]], device='cuda:0')
         boxes = boxes * scale_fct[:, None, :]
 
+        # `scores` is the highest probability in the class `labels`
+        # `labels` is the class
+        # `boxes` is the xyxy corrdinates of the box
         results = [{'scores': s, 'labels': l, 'boxes': b} for s, l, b in zip(scores, labels, boxes)]
 
         return results
