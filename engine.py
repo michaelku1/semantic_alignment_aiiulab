@@ -116,7 +116,9 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, output_dir, cfg, **kwargs):
     """
     data_loader.dataset: `CocoDetection`, not `DADataset`
+    base_ds: `pycocotools.coco.COCO`
     """
+
     model.eval()
     criterion.eval()
 
@@ -126,7 +128,13 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
 
     iou_types = tuple(k for k in ('segm', 'bbox') if k in postprocessors.keys())
     coco_evaluator = CocoEvaluator(base_ds, iou_types)
-    # coco_evaluator.coco_eval[iou_types[0]].params.iouThrs = [0, 0.1, 0.5, 0.75]
+
+    # evaluate mAP per class
+    coco_evaluators_per_class = {cat_id: CocoEvaluator(base_ds, iou_types) for cat_id in base_ds.getCatIds()}
+    for cat_id, class_evaluator in coco_evaluators_per_class.items():
+        for evaluator in class_evaluator.coco_eval.values():
+            # evaluator: `COCOeval`
+            evaluator.params.catIds = [cat_id]
 
     panoptic_evaluator = None
     if 'panoptic' in postprocessors.keys():
@@ -178,6 +186,10 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
         if coco_evaluator is not None:
             coco_evaluator.update(res)
 
+        if coco_evaluators_per_class is not None:
+            for class_evaluator in coco_evaluators_per_class.values():
+                class_evaluator.update(res)
+
         if panoptic_evaluator is not None:
             res_pano = postprocessors["panoptic"](outputs, target_sizes, orig_target_sizes)
             for i, target in enumerate(targets):
@@ -193,6 +205,9 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
     print("Averaged stats:", metric_logger)
     if coco_evaluator is not None:
         coco_evaluator.synchronize_between_processes()
+    if coco_evaluators_per_class is not None:
+        for class_evaluator in coco_evaluators_per_class.values():
+            class_evaluator.synchronize_between_processes()
     if panoptic_evaluator is not None:
         panoptic_evaluator.synchronize_between_processes()
 
@@ -200,6 +215,13 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
     if coco_evaluator is not None:
         coco_evaluator.accumulate()
         coco_evaluator.summarize()
+    if coco_evaluators_per_class is not None:
+        for cat_id, class_evaluator in coco_evaluators_per_class.items():
+            cat_name = base_ds.loadCats(ids=cat_id)[0]['name']
+            print('=' * 25)
+            print(f'cat id = {cat_id}, name = {cat_name}')
+            class_evaluator.accumulate()
+            class_evaluator.summarize()
     panoptic_res = None
     if panoptic_evaluator is not None:
         panoptic_res = panoptic_evaluator.summarize()
@@ -207,6 +229,9 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, out
     if coco_evaluator is not None:
         if 'bbox' in postprocessors.keys():
             stats['coco_eval_bbox'] = coco_evaluator.coco_eval['bbox'].stats.tolist()
+            for cat_id, class_evaluator in coco_evaluators_per_class.items():
+                cat_name = base_ds.loadCats(ids=cat_id)[0]['name']
+                stats[f'coco_eval_bbox_cat_id={cat_id}_cat_name={cat_name}'] = class_evaluator.coco_eval['bbox'].stats.tolist()
         if 'segm' in postprocessors.keys():
             stats['coco_eval_masks'] = coco_evaluator.coco_eval['segm'].stats.tolist()
     if panoptic_res is not None:
