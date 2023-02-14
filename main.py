@@ -433,7 +433,7 @@ def main(cfg):
         
         
         # import pdb; pdb.set_trace()
-        if type(thresh_stats)==list():
+        if type(thresh_stats)==list:
             if (epoch+1) % 1 == 0:
                 torch.save(thresh_stats, output_dir / f'stats_epoch_{epoch:04}.pt')
 
