@@ -65,18 +65,19 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     # import pdb; pdb.set_trace()
 
     # print('start to search empty targets')
-    # empty_count = 0
+    # all_empty_count = 0
+    # partial_empty_count = 0
     # t = tqdm(range(len(data_loader)))
     # for i in t:
     #     lens = [len(target['labels']) == 0 for target in targets]
-    #     if  all(lens):
-    #         pass
-    #     else:
-    #         empty_count += 1
-    #         import pdb; pdb.set_trace()
+    #     if sum(lens) > 0:
+    #         if  all(lens):
+    #             all_empty_count += 1
+    #         else:
+    #             partial_empty_count += 1
 
     #     t.set_description(f'batch {i}/{len(data_loader)}')
-    #     t.set_postfix({'empty count': empty_count})
+    #     t.set_postfix({'all empty': all_empty_count, 'partial empty': partial_empty_count})
     #     samples, targets = prefetcher.next()
     # print('done')
     # import pdb; pdb.set_trace()
