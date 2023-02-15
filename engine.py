@@ -17,6 +17,7 @@ import os
 import sys
 from typing import Iterable
 from pathlib import Path
+from tqdm import tqdm
 
 import torch
 import util.misc as utils
@@ -53,6 +54,33 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     #     'orig_size': (2,),
     #     'size': (2)
     # }]
+    # NOTE: because there are some data without labels, and a transformation RandomSizeCrop may crop a region
+    # that it has no labels, some target has an empty label!
+
+    # ↓↓↓ search empty labels ↓↓↓
+    # source_coco = data_loader.dataset.source.coco
+    # target_coco = data_loader.dataset.target.coco
+    # print([img_id for img_id in source_coco.getImgIds() if len(source_coco.getAnnIds(imgIds=img_id)) == 0])
+    # print([img_id for img_id in target_coco.getImgIds() if len(target_coco.getAnnIds(imgIds=img_id)) == 0])
+    # import pdb; pdb.set_trace()
+
+    # print('start to search empty targets')
+    # empty_count = 0
+    # t = tqdm(range(len(data_loader)))
+    # for i in t:
+    #     lens = [len(target['labels']) == 0 for target in targets]
+    #     if  all(lens):
+    #         pass
+    #     else:
+    #         empty_count += 1
+    #         import pdb; pdb.set_trace()
+
+    #     t.set_description(f'batch {i}/{len(data_loader)}')
+    #     t.set_postfix({'empty count': empty_count})
+    #     samples, targets = prefetcher.next()
+    # print('done')
+    # import pdb; pdb.set_trace()
+    # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
 
     res = {}
     for _ in metric_logger.log_every(range(len(data_loader)), print_freq, header):
