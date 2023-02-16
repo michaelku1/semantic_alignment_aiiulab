@@ -40,7 +40,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     metric_logger.add_meter('grad_norm', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 1
-
+    
     prefetcher = data_prefetcher(data_loader, device, prefetch=True)
     samples, targets = prefetcher.next() # samples have been transformed
     
@@ -63,7 +63,6 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     
     # # normalized boxes, duplicate outputs, returns list of dictionaries
     # boxes_gt = postprocessors_target['bbox'](targets[1], orig_target_sizes)[1]['boxes'] # same labels for targets[0] and targets[1] 
-    
 
     # info_all = {}
     # info_all['gt'] = [boxes_gt, label_gt, prob_gt]
@@ -72,16 +71,15 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     # plot_results_train(info_all, img_id, full_path, target_sample)
     # import pdb; pdb.set_trace()
 
-
     data_loader_len = len(data_loader)
     # total_iter = data_loader_len*total_epoch
     
-    # category_ids = [1,2,3,4,5,6,7,8]
     # for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
     ### value on the left is current and value on the right is smoothed value
     thresh_record = []
+    thresh_tmp_list = []
+    missing_source = 0
     for iter in metric_logger.log_every(range(data_loader_len), print_freq, header):
-
         # if len(targets[0]['labels'])==0:
         #     import pdb; pdb.set_trace()
         #     outputs = model(samples, targets, cur_epoch, total_epoch)
@@ -97,16 +95,22 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         # plt.savefig(str('./visualization/image/image_{}.png').format(targets[0]['image_id'].cpu().item()), bbox_inches='tight')
         # plt.close()
 
-        # BUG empty source targets
-        # if targets[0]['labels'].nelement() == 0:
-        #     import pdb; pdb.set_trace()
-        #     outputs = model(samples, targets, cur_epoch, total_epoch)
-        #     loss_dict = criterion(outputs, targets, mode='train')
+        # BUG counting number of missing source targets
+        for t in targets:
+            if t['labels'].nelement() == 0:
+                # import pdb; pdb.set_trace()
+                missing_source += 1
+                continue
 
         outputs = model(samples, targets, cur_epoch, total_epoch)
+
+
         # TODO testing
         if 'thresh' in outputs:
             thresh_record.append(outputs['thresh'])
+
+        if 'thresh_change_occurence' in outputs:
+            thresh_tmp_list.append(outputs['thresh_change_occurence'])
 
 
         # image_id_list = [t['image_id'] for t in targets]
@@ -263,6 +267,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
         samples, targets = prefetcher.next()
     
+    print(missing_source)
+    
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
@@ -270,14 +276,15 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     # TODO at the end of each epoch, return the updated cur_iter
     if 'probs' in outputs:
         return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, cur_iter, outputs['probs']
-    if 'thresh' in outputs:
-        thresh_stats = {}
-        thresh_stats['max'] = torch.as_tensor(max(thresh_record))
-        thresh_stats['min'] = torch.as_tensor(min(thresh_record))
-        thresh_stats['mean'] = torch.as_tensor(sum(thresh_record)/len(thresh_record))
-        return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, thresh_stats
+    # if 'thresh' in outputs:
+    #     thresh_stats = {}
+    #     thresh_stats['max'] = torch.as_tensor(max(thresh_record))
+    #     thresh_stats['min'] = torch.as_tensor(min(thresh_record))
+    #     thresh_stats['mean'] = torch.as_tensor(sum(thresh_record)/len(thresh_record))
+    #     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, thresh_stats, outputs
+    
     else:
-        return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, None
+        return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, thresh_tmp_list, outputs
 
 
 @torch.no_grad()
