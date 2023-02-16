@@ -114,6 +114,8 @@ def main(cfg):
         data_loader_train = DataLoader(dataset_train, batch_sampler=batch_sampler_train,
                                        collate_fn=DAOD.collate_fn, num_workers=cfg.NUM_WORKERS,
                                        pin_memory=True)
+        
+
     else:
         batch_sampler_train = torch.utils.data.BatchSampler(sampler_train, cfg.TRAIN.BATCH_SIZE, drop_last=True)
 
@@ -423,17 +425,18 @@ def main(cfg):
                 base_ds, postprocessors, postprocessors_target, image_ids, cfg.TRAIN.CLIP_MAX_NORM)
         
         else:
-            train_stats, thresh_stats = train_one_epoch(
+            # prototypes storing dict
+            train_stats, thresh_stats, outputs = train_one_epoch(
                 model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS, total_iter,
                 base_ds, postprocessors, postprocessors_target, image_ids, cfg.TRAIN.CLIP_MAX_NORM)
             
-            # train_stats = train_one_epoch(
-            #     model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS, total_iter,
-            #     base_ds, postprocessors, postprocessors_target, image_ids, cfg.TRAIN.CLIP_MAX_NORM)
+        if 'thresh_change_occurence' in outputs:
+            torch.save(outputs['thresh_change_occurence'], output_dir / f'thresh_tmp_list_{epoch:04}.pt')
         
-        
-        # import pdb; pdb.set_trace()
-        if type(thresh_stats)==list:
+        if 'prototypes_enc' in outputs:
+            torch.save(outputs['prototypes_enc'], output_dir / f'prototypes_epoch_{epoch:04}.pt')
+
+        if type(thresh_stats)==list():
             if (epoch+1) % 1 == 0:
                 torch.save(thresh_stats, output_dir / f'stats_epoch_{epoch:04}.pt')
 
