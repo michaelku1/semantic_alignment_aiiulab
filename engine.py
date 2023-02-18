@@ -44,9 +44,9 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     prefetcher = data_prefetcher(data_loader, device, prefetch=True)
     samples, targets = prefetcher.next() # samples have been transformed
     
-    # # ### testing whether samples and targets are matched
+    ### testing whether samples and targets are matched
     # root = data_loader.dataset.target.root
-    # # TODO image from gt
+    # # # TODO image from gt
     # img_id = targets[1]['image_id'].item()
     # # put channel to last dim
     # # image from loaded sample
@@ -69,7 +69,6 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
     # # plot results for testing
     # plot_results_train(info_all, img_id, full_path, target_sample)
-    # import pdb; pdb.set_trace()
 
     data_loader_len = len(data_loader)
     # total_iter = data_loader_len*total_epoch
@@ -79,14 +78,13 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     thresh_record = []
     thresh_tmp_list = []
     missing_source = 0
-    for iter in metric_logger.log_every(range(data_loader_len), print_freq, header):
+    for iter_i in metric_logger.log_every(range(data_loader_len), print_freq, header):
         # if len(targets[0]['labels'])==0:
         #     import pdb; pdb.set_trace()
         #     outputs = model(samples, targets, cur_epoch, total_epoch)
 
         # cur_iter += iter # update iter
 
-        ### TODO visualize images
         # unpadded_samples = samples.tensors[0][:, :targets[0]['size'][0], :targets[0]['size'][1]]
         # average_image = unpadded_samples.mean(0)
         # plt.figure(figsize=(30, 50))
@@ -102,7 +100,9 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                 missing_source += 1
                 continue
 
-        outputs = model(samples, targets, cur_epoch, total_epoch)
+        # DEBUG for nan grad
+        # with torch.autograd.detect_anomaly():
+        outputs = model(samples, targets, iter_i, cur_epoch, total_epoch)
 
 
         # TODO testing
@@ -223,7 +223,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
         # store unscaled losses
         loss_dict_reduced_unscaled = {f'{k}_unscaled': v
-                                      for k, v in loss_dict_reduced.items()}
+                                    for k, v in loss_dict_reduced.items()}
 
         # store scaled losses
         loss_dict_reduced_scaled = {k: v * weight_dict[k]
@@ -251,6 +251,9 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
         optimizer.zero_grad()
         losses.backward()
+
+        # with torch.autograd.set_detect_anomaly(True):
+        #     losses.backward()
 
         if max_norm > 0:
             # compute gradient norm
@@ -315,7 +318,7 @@ def evaluate(model, criterion, postprocessors, postprocessors_target, data_loade
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
 
         
-        outputs = model(samples, None, None, None)
+        outputs = model(samples, None, None, None, None)
 
         # import pdb; pdb.set_trace()
         loss_dict = criterion(outputs, targets, mode='test')
