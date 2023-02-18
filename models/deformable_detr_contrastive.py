@@ -476,6 +476,7 @@ class DeformableDETR(nn.Module):
 
                 # finally assigned back to prototypes
                 prototypes = prototypes_copy
+                # prototypes = F.normalize(prototypes, dim=-1)
 
                 # breakpoint()
                 # updated_src_prototypes_enc = updated_class_prototypes[0,:,:]
