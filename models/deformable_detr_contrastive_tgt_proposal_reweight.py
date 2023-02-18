@@ -74,7 +74,9 @@ class DeformableDETR(nn.Module):
         # self.cross_attn_dec = CrossAttention_agg_prototypes(transformer.d_model, transformer.nhead, 0.1)
         # self.cross_attn = CrossAttention_agg_encoder(transformer.d_model, transformer.nhead, 0.1)
         self.ema = ema
-        self.m_items = F.normalize(torch.rand((2, num_classes-1, transformer.d_model), dtype=torch.float), dim=1).cuda()
+        # self.m_items = nn.Parameter(torch.zeros((2, num_classes-1, transformer.d_model), dtype=torch.float, requires_grad=True).cuda()
+        # self.m_items = torch.zeros((2, num_classes-1, transformer.d_model), dtype=torch.float, requires_grad=True).cuda()
+
 
         self.num_queries = num_queries
         self.transformer = transformer
@@ -181,7 +183,7 @@ class DeformableDETR(nn.Module):
                 nn.init.constant_(layer.bias, 0)
 
 
-    def forward(self, samples: NestedTensor, targets, cur_epoch, total_epoch):
+    def forward(self, samples: NestedTensor, targets, iter_i, cur_epoch, total_epoch):
         """ The forward expects a NestedTensor, which consists of:
                - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
                - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
@@ -468,14 +470,17 @@ class DeformableDETR(nn.Module):
                     filters = src_prototypes_enc.squeeze(0).unsqueeze(-1).unsqueeze(-1)
                     # (num_rois, num_classes, width, height)
 
-                    # thresh_mask = 0.9
-
-                    thresh_mask = 0.9 * max(0.5, 1-(cur_epoch/total_epoch))
+                    thresh_mask = 0.9
+                    # thresh_mask = 0.9 * max(0.5, 1-(cur_epoch/total_epoch))
                     # breakpoint()
                     output_tensor = F.conv2d(rois_target, filters).sigmoid()
                     # output_tensor = F.conv2d(rois_target.squeeze(0), filters).sigmoid()
                     binary_masks =  torch.where(output_tensor>thresh_mask, 1, 0) # (11, 9, 7, 7)
-                    
+
+                    # torch.save(output_tensor, f'./visualization/output_tensor/output_tensor_{iter_i}.pt')
+                    # torch.save(binary_masks, f'./visualization/binary_masks/binary_masks_{iter_i}.pt')
+
+
                     # hard thresholding
                     filtered_rois_target_list = [] # class wise
                     for roi_index in range(rois_target.shape[0]):
@@ -528,7 +533,7 @@ class DeformableDETR(nn.Module):
             for roi_scale_group in list_of_weighted_tgt_rois_final:
                 # import pdb; pdb.set_trace()
                 tgt_prototypes_enc, _ = weighted_aggregate_tmp(B, tgt_labels, roi_scale_group, tgt_scores, self.num_classes, self.hidden_dim)
-                tgt_prototypes_enc = F.normalize(tgt_prototypes_enc, dim=-1)
+                tgt_prototypes_enc = F.normalize(tgt_prototypes_enc, dim=-1) # BUG
                 list_of_tgt_prototypes.append(tgt_prototypes_enc)
             
             # (scale, num_classes, feat_dim)
@@ -1068,28 +1073,44 @@ class SetCriterion(nn.Module):
 
     # L2 loss
     def distance(self, src_feat, tgt_feat):
-        output = torch.pow(src_feat - tgt_feat, 2.0).mean()
+        eps = 1e-9
+        # BUG Function 'PowBackward0' returned nan values in its 0th output
+        output = torch.pow((src_feat - tgt_feat), 2.0).mean() + eps
+
+        # print(output)
+
         return output
     
     def contrastive_loss(self, source, target, alpha_values, margin=1):
 
-        intra_loss = 0
-        inter_loss = 0
+        intra_loss = 0.
+        inter_loss = 0.
+
+        eps = 1e-6
+        # target.register_hook(lambda grad: print(torch.isnan(grad).any()))
+        # source.register_hook(lambda grad: print(torch.isnan(grad).any()))
 
         # TODO for initial source and target zero entries, 
         for cls_idx in range(self.num_classes-1):
             tmp_src_feat_1 = source[cls_idx, :] # per class prototype
             tmp_tgt_feat_1 = target[cls_idx, :] # per class prototype
+
+            # print(tmp_tgt_feat_1)
             
+            # tmp_tgt_feat_1.register_hook(lambda grad: print(torch.isnan(grad).any()))
+            # tmp_tgt_feat_1.register_hook(lambda grad: breakpoint() if torch.isnan(grad).any() == True else print(grad))
+
             # intra
-            eps=1e-5
-            # intra_loss = intra_loss + torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_1)+eps)
+            # intra_loss = intra_loss + torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_1))
             intra_loss = intra_loss + self.distance(tmp_src_feat_1, tmp_tgt_feat_1)
 
             # inter takes into account the current and all other classes
             for cls_idx_next in range(cls_idx+1, self.num_classes-1):
                 tmp_src_feat_2 = source[cls_idx_next, :]
                 tmp_tgt_feat_2 = target[cls_idx_next, :]
+
+                # print(tmp_tgt_feat_2)
+                # print(tmp_src_feat_2)
 
                 # inter_loss = inter_loss + alpha_values[0][cls_idx] * alpha_values[1][cls_idx] * torch.pow(
                 #     (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin,
@@ -1113,6 +1134,31 @@ class SetCriterion(nn.Module):
                 #     (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2))) / margin,
                 #     2) * torch.pow(
                 #     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
+                #               torch.tensor(0).float().cuda()), 2.0)
+
+                ### w/o sqrt
+                # inter_loss =  inter_loss + torch.pow(
+                #     (margin - (self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin,
+                #     2) * torch.pow(
+                #     torch.max(margin - (self.distance(tmp_src_feat_1, tmp_src_feat_2)),
+                #               torch.tensor(0).float().cuda()), 2.0)
+
+                # inter_loss =  inter_loss + torch.pow(
+                #     (margin - (self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))) / margin,
+                #     2) * torch.pow(
+                #     torch.max(margin - (self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),
+                #               torch.tensor(0).float().cuda()), 2.0)
+
+                # inter_loss =  inter_loss + torch.pow(
+                #     (margin - (self.distance(tmp_src_feat_1, tmp_tgt_feat_2))) / margin,
+                #     2) * torch.pow(
+                #     torch.max(margin - (self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),
+                #               torch.tensor(0).float().cuda()), 2.0)
+
+                # inter_loss = inter_loss + torch.pow(
+                #     (margin - (self.distance(tmp_tgt_feat_1, tmp_src_feat_2))) / margin,
+                #     2) * torch.pow(
+                #     torch.max(margin - (self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
                 #               torch.tensor(0).float().cuda()), 2.0)
 
                 ### original implementation
@@ -1140,11 +1186,19 @@ class SetCriterion(nn.Module):
                     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
                               torch.tensor(0).float().cuda()), 2.0)
 
+                # inter_loss =  inter_loss + (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2)) / margin)
 
-        # import pdb; pdb.set_trace()
+                # inter_loss =  inter_loss + (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)) / margin)
+                    
+                # inter_loss =  inter_loss + (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2)) / margin)
+                    
+                # inter_loss =  inter_loss + (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)) / margin)
+                    
+
         # average over all classes*batch_dim 
         intra_loss = intra_loss / source.shape[0]
 
+        # breakpoint()
         # combinations between each class for two domains
         inter_loss = inter_loss / (source.shape[0] * (source.shape[0] - 1) * 2) # at the of the iteration the there will be one "next class" being left off
 
@@ -1162,6 +1216,7 @@ class SetCriterion(nn.Module):
         # print(type(inter_loss))
         
         # inter_loss = torch.tensor(0.)
+        # intra_loss = torch.tensor(0.)
         # if isinstance(intra_loss, float) or isinstance(inter_loss, float):
         #     import pdb; pdb.set_trace()
 
@@ -1256,6 +1311,7 @@ class SetCriterion(nn.Module):
             target_enc = outputs['prototypes_enc']['tgt_prototypes_enc']
             alpha_values = outputs['prototypes_enc']['alpha_values']
             
+            # with torch.autograd.set_detect_anomaly(True):
             intra_loss_enc, inter_loss_enc = self.contrastive_loss(source_enc, target_enc, alpha_values, margin = self.margin)
 
             ### multi scale 
@@ -1271,7 +1327,6 @@ class SetCriterion(nn.Module):
             source_dec = outputs['prototypes_dec']['src_prototypes_dec']
             target_dec = outputs['prototypes_dec']['tgt_prototypes_dec']
             # alpha_values = outputs['alpha_values']
-            
             intra_loss_dec, inter_loss_dec = self.contrastive_loss(source_dec, target_dec, None, margin = self.margin)
 
             losses['loss_intra_class_dec'] = intra_loss_dec

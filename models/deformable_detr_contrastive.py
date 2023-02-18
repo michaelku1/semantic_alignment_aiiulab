@@ -63,8 +63,12 @@ class DeformableDETR(nn.Module):
         # TODO: returns updated prototypes
         if ema:
             self.memory = Memory(num_classes, transformer.d_model, keep_rate = keep_rate, num_feature_levels=num_feature_levels)
-        # self.m_items = F.normalize(torch.rand((2*num_feature_levels, num_classes, transformer.d_model), dtype=torch.float), dim=1).cuda()
-        self.m_items = torch.zeros(2, num_classes-1, transformer.d_model).cuda()
+
+        # self.m_items = torch.zeros((2, num_classes-1, transformer.d_model)).cuda()
+
+        # initialise memory items with small values since we want to fill missing source/target current prototypes
+        self.m_items = torch.full((2, num_classes-1, transformer.d_model), 1e-6).cuda()
+
 
         self.ema = ema
         self.num_queries = num_queries
@@ -170,7 +174,7 @@ class DeformableDETR(nn.Module):
                 nn.init.constant_(layer.bias, 0)
 
 
-    def forward(self, samples: NestedTensor, targets, cur_epoch, total_epoch):
+    def forward(self, samples: NestedTensor, targets, cur_iter, cur_epoch, total_epoch):
         """ The forward expects a NestedTensor, which consists of:
                - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
                - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
@@ -287,7 +291,7 @@ class DeformableDETR(nn.Module):
             # decreases linearly
             # thresh = 0.9 * max(0.5, 1-(cur_epoch/total_epoch))
 
-            thresh = 0.9
+            thresh = 0.6
 
             # # size: [torch.Size([31, 2]), torch.Size([11, 2])]
             # nonzero returns object query index and the argmax of the class distribution
@@ -454,21 +458,31 @@ class DeformableDETR(nn.Module):
 
             prototypes = torch.stack([src_prototypes_enc, tgt_prototypes_enc], dim=0)
             
+            # current iter memory copy
+            # memory_items_copy = self.m_items.detach()
+            prototypes_copy = prototypes.clone()
 
             if self.ema:
                 new_memory = self.memory(self.m_items, prototypes)
                 self.m_items = new_memory
-                updated_class_prototypes = new_memory
+                # updated_class_prototypes = new_memory
+
+                ### fill missing class features with memory features
+                for B_i in range(prototypes.shape[0]):
+                    for cls_i, value in enumerate(prototypes[B_i]):
+                        if value.sum().item() == 0.:
+                            # breakpoint()
+                            prototypes_copy[B_i][cls_i] = self.m_items[B_i][cls_i].detach()
+
+                # finally assigned back to prototypes
+                prototypes = prototypes_copy
 
                 # breakpoint()
-                updated_src_prototypes_enc = updated_class_prototypes[0,:,:]
-                updated_tgt_prototypes_enc = updated_class_prototypes[1,:,:]
+                # updated_src_prototypes_enc = updated_class_prototypes[0,:,:]
+                # updated_tgt_prototypes_enc = updated_class_prototypes[1,:,:]
                 # updated_src_prototypes_dec = updated_class_prototypes[:,:B//2,:,:]
                 # updated_tgt_prototypes_dec = updated_class_prototypes[:,B//2:,:,:]
-            
-            else:
-                updated_src_prototypes_enc = src_prototypes_enc
-                updated_tgt_prototypes_enc = tgt_prototypes_enc
+
                 # updated_src_prototypes_dec = src_prototypes_dec
                 # updated_tgt_prototypes_dec = tgt_prototypes_dec
 
@@ -506,7 +520,7 @@ class DeformableDETR(nn.Module):
         if self.training:
             # out['prototypes'] = {'src_prototypes': src_prototypes, 'tgt_prototypes': tgt_prototypes}
             alpha_values = None
-            out['prototypes_enc'] = {'src_prototypes_enc': updated_src_prototypes_enc, 'tgt_prototypes_enc': updated_tgt_prototypes_enc, 'alpha_values': alpha_values}
+            out['prototypes_enc'] = {'src_prototypes_enc': prototypes[0], 'tgt_prototypes_enc': prototypes[1], 'alpha_values': alpha_values}
             # out['prototypes_dec'] = {'src_prototypes_dec': updated_src_prototypes_dec, 'tgt_prototypes_dec': updated_tgt_prototypes_dec, 'alpha_values': alpha_values}
 
             if len(thresh_tmp_list) > 0:
@@ -900,7 +914,12 @@ class SetCriterion(nn.Module):
 
     # L2 loss
     def distance(self, src_feat, tgt_feat):
-        output = torch.pow(src_feat - tgt_feat, 2.0).mean()
+        eps = 1e-7
+        output = torch.pow(src_feat - tgt_feat, 2.0).mean() + eps
+        # DEBUG print gradients
+        # output.register_hook(lambda grad: print(grad))
+        # print(output)
+
         return output
     
     # TODO in this implementation, the intra class loss between samples is not considered
@@ -918,9 +937,12 @@ class SetCriterion(nn.Module):
             tmp_src_feat_1 = source[cls_idx, :] # per class prototype
             tmp_tgt_feat_1 = target[cls_idx, :] # per class prototype
             
-            # intra
-            # intra_loss = intra_loss + torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_1))
-            intra_loss = intra_loss + self.distance(tmp_src_feat_1, tmp_tgt_feat_1)
+            # DEBUG print out
+            # print(self.distance(tmp_src_feat_1, tmp_tgt_feat_1))
+            # print(torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_1)))
+
+            intra_loss = intra_loss + torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_1))
+            # intra_loss = intra_loss + self.distance(tmp_src_feat_1, tmp_tgt_feat_1)
 
             # inter takes into account the current and all other classes
             for cls_idx_next in range(cls_idx+1, self.num_classes-1):
@@ -953,7 +975,8 @@ class SetCriterion(nn.Module):
                     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
                               torch.tensor(0).float().cuda()), 2.0)
 
-                # import pdb; pdb.set_trace()
+
+
                 # inter_loss = inter_loss + alpha_values[0][cls_idx] * alpha_values[1][cls_idx] * torch.pow(
                 #     (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin,
                 #     2) * torch.pow(
@@ -977,20 +1000,6 @@ class SetCriterion(nn.Module):
                 #     2) * torch.pow(
                 #     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
                 #               torch.tensor(0).float().cuda()), 2.0)
-
-                # eps = 1e-5 # prevent gradient of sqrt at 0
-
-                # inter_loss =  inter_loss + ((margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2))+eps) / margin) * torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2)),
-                #                 torch.tensor(0).float().cuda())
-
-                # inter_loss =  inter_loss + ((margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))+eps) / margin) * torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),
-                #                 torch.tensor(0).float().cuda())
-
-                # inter_loss =  inter_loss + ((margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2))+eps) / margin) * torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),
-                #                 torch.tensor(0).float().cuda())
-
-                # inter_loss =  inter_loss + ((margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2))+eps) / margin) * torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
-                #                 torch.tensor(0).float().cuda())
 
 
                 ### testing
@@ -1019,7 +1028,6 @@ class SetCriterion(nn.Module):
                 #             torch.tensor(0).float().cuda()), 2.0)
 
                 
-        # import pdb; pdb.set_trace()
         # average over all classes*batch_dim 
         intra_loss = intra_loss / source.shape[0]
 
