@@ -21,17 +21,123 @@ def find_thresh(outputs_class_conf, thresh, keep):
         # new_keep = [torch.nonzero(outputs_class_conf[b]>thresh).unsqueeze(0) for b in range(outputs_class_conf.shape[0])]
         return keep, thresh
 
+
+class FCDiscriminator(nn.Module):
+    def __init__(self, num_classes, ndf = 64):
+        super(FCDiscriminator, self).__init__()
+        # self.conv1 = nn.Conv2d(num_classes, ndf, kernel_size=4, stride=2, padding=1)
+        self.conv1 = nn.Conv2d(ndf, ndf*2, kernel_size=4, stride=2, padding=1)
+        self.conv2 = nn.Conv2d(ndf*2, ndf*4, kernel_size=4, stride=2, padding=1)
+        # self.conv4 = nn.Conv2d(ndf*4, ndf*8, kernel_size=4, stride=2, padding=1)
+        # self.classifier = nn.Conv2d(ndf*8, 1, kernel_size=4, stride=2, padding=1)
+
+        self.classifier = nn.Conv2d(ndf*4, 1, kernel_size=4, stride=2, padding=1) # change clasifier dim
+        self.leaky_relu = nn.LeakyReLU(negative_slope=0.2, inplace=True)
+        #self.up_sample = nn.Upsample(scale_factor=32, mode='bilinear')
+        #self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        import pdb; pdb.set_trace()
+        x = self.conv1(x)
+        x = self.leaky_relu(x)
+        x = self.conv2(x)
+        x = self.leaky_relu(x)
+        # x = self.conv3(x)
+        # x = self.leaky_relu(x)
+        # x = self.conv4(x)
+        # x = self.leaky_relu(x)
+        x = self.classifier(x)
+        #x = self.up_sample(x)
+        # x = self.sigmoid(x)
+
+        # 
+        return x
+
+# NOTE checked
+def weighted_aggregate_tmp(batch_d, list_of_labels, list_of_rois, list_of_scores, num_classes, hidden_dim):
+    
+    """
+    list_of_rois: dim 
+    """
+
+    B = batch_d//2 # single domain
+
+    source_labels = []
+    weighted_rois_source = []
+
+    for i in range(B):
+        label_set = list(set(list_of_labels[i])) # label set for each sample 
+        # this is only valid as starting index is 0
+        source_labels.append(label_set)
+
+        # confidence guided merging
+        weighted_rois = list_of_rois[i].squeeze(0)*list_of_scores[i].unsqueeze(-1) # reweighted rois
+        weighted_rois_source.append(weighted_rois)
+
+
+    assert len(weighted_rois_source) == len(source_labels)
+    "label and roi lists are not one-to-one"
+    
+    # extract src rois
+    source_rois = [] # [bs, num_labels] (num_rois, 1, feat_dim)
+    source_labels_all = list_of_labels
+
+    # check length
+    assert len(source_labels) == len(source_labels_all) == len(weighted_rois_source), "length should be the same per sample"
+
+    
+    ### use labels to group class rois
+    for i in range(len(source_labels)):
+        tmp = []
+        for label in source_labels[i]:
+            matched_src_idx = torch.nonzero(torch.as_tensor(source_labels_all[i])==label).squeeze(1) # matched_idx: (11, 1)
+            rois_source = weighted_rois_source[i][matched_src_idx].unsqueeze(1) # (num_rois, 1, feat_dim)
+            # import pdb; pdb.set_trace()
+            tmp.append(rois_source)
+
+        source_rois.append(tmp)
+
+    # aggregate rois for each class
+    src_prototypes = torch.zeros((num_classes-1, hidden_dim)).cuda()
+    epsilon = 1e-6
+
+    # i batch
+    for i in range(len(source_rois)):
+        roi_sample_tmp = source_rois[i] # some rois for a single class
+        # j label
+        for j in range(len(roi_sample_tmp)):
+            aggregate = torch.sum(roi_sample_tmp[j], dim=0)/(torch.sum(list_of_scores[0]) + epsilon)
+            # store prototype at the corresponding cls index position
+            src_prototypes[source_labels[i][j]-1] = aggregate
+
+    # class reweighting factor
+    alpha_values_src = torch.ones((num_classes))
+
+    # import pdb; pdb.set_trace()
+    for cls_i in range(1,num_classes,1):
+        if cls_i in list_of_labels[0]:
+            indices_list = torch.nonzero(torch.as_tensor(list_of_labels[0])==cls_i).tolist()
+            flatten = [index[0] for index in indices_list]
+            p_max = max(list_of_scores[0][flatten])
+            alpha = 1-p_max
+            alpha_values_src[cls_i] = alpha
+        else:
+            continue
+
+    alphas = alpha_values_src
+
+    return src_prototypes, alphas
+
 def weighted_aggregate(batch_d, list_of_labels, list_of_rois, list_of_scores, num_classes, hidden_dim):
-    ### weighted aggregate
-    # labels existing (sorted)
-    B = batch_d
+    """
+    list_of_rois: [batch] (num_rois, feat_dim)
+    """
+    B = batch_d 
     source_labels = []
     target_labels = []
 
     weighted_rois_source = []
     weighted_rois_target = []
-
-    # import pdb; pdb.set_trace()
 
     for i in range(B):
         label_set = list(set(list_of_labels[i])) # label set for each sample 
@@ -66,50 +172,83 @@ def weighted_aggregate(batch_d, list_of_labels, list_of_rois, list_of_scores, nu
 
     # import pdb; pdb.set_trace()
     # since labels are sorted, the correponding rois are one-to-one with respect to labels
+    # size: (batch_size,,num_rois,1,feat_dim)
+
+    # import pdb; pdb.set_trace()
+    # batch dim
     for i in range(len(source_labels)):
         tmp = []
         # single label
         for label in source_labels[i]:
-            matched_src_idx = torch.nonzero(torch.as_tensor(source_labels_all[i])==label).squeeze(1) # tensor  # e.g matched_idx: torch.Size([11, 1])
-            rois_source = weighted_rois_source[i][matched_src_idx].unsqueeze(1) # tensor
+            matched_src_idx = torch.nonzero(torch.as_tensor(source_labels_all[i])==label).squeeze(1) # e.g matched_idx: torch.Size([11, 1])
+            rois_source = weighted_rois_source[i][matched_src_idx].unsqueeze(1)
             # import pdb; pdb.set_trace()
             tmp.append(rois_source)
-
         source_rois.append(tmp)
 
     for i in range(len(target_labels)):
         tmp = []
         for label in target_labels[i]:
             # e.g matched_idx: torch.Size([11, 1])
-            matched_tgt_idx = torch.nonzero(torch.as_tensor(target_labels_all[i])==label).squeeze(1) # tensor
-            rois_target = weighted_rois_target[i][matched_tgt_idx].unsqueeze(1) # tensor
+            matched_tgt_idx = torch.nonzero(torch.as_tensor(target_labels_all[i])==label).squeeze(1)
+            rois_target = weighted_rois_target[i][matched_tgt_idx].unsqueeze(1) 
             tmp.append(rois_target)
         target_rois.append(tmp)
 
     # aggregate rois for each class
-    src_prototypes = torch.zeros((num_classes, hidden_dim)).cuda()
-    tgt_prototypes = torch.zeros((num_classes, hidden_dim)).cuda()
+    src_prototypes = torch.zeros((B//2, num_classes-1, hidden_dim)).cuda()
+    tgt_prototypes = torch.zeros((B//2, num_classes-1, hidden_dim)).cuda()
 
     epsilon = 1e-6
     # this is to also index labels (one-to-one)
     # batch len
+    # import pdb; pdb.set_trace()
     for i in range(len(source_rois)):
         roi_sample_tmp = source_rois[i] # some rois for a single class
         # some rois
+        # class len
         for j in range(len(roi_sample_tmp)):
             # src_prototypes.append(torch.sum(source_roi, dim=0)/(torch.sum(list_of_scores[0]) + epsilon))
             aggregate = torch.sum(roi_sample_tmp[j], dim=0)/(torch.sum(list_of_scores[0]) + epsilon)
-            # store prototype at the corresponding cls index position
-            src_prototypes[source_labels[i][j]] = aggregate
+            cls_idx = source_labels[i][j]-1
+            src_prototypes[i][cls_idx] = aggregate # BUG: empty tensors
             
     for i in range(len(target_rois)):
         roi_sample_tmp = target_rois[i]
         for j in range(len(roi_sample_tmp)):
             # tgt_prototypes.append(torch.sum(target_rois[i], dim=0)/(torch.sum(list_of_scores[1]) + epsilon))
             aggregate = torch.sum(roi_sample_tmp[j], dim=0)/(torch.sum(list_of_scores[1]) + epsilon)
-            tgt_prototypes[target_labels[i][j]] = aggregate
+            cls_idx = target_labels[i][j]-1
+            tgt_prototypes[i][cls_idx] = aggregate # BUG: empty tensors
 
-    return src_prototypes, tgt_prototypes
+    # class reweighting factor
+    alpha_values_src = torch.ones((num_classes-1))
+    alpha_values_tgt = torch.ones((num_classes-1))
+
+    # import pdb; pdb.set_trace()
+    for cls_i in range(1,num_classes,1):
+        if cls_i in list_of_labels[0]:
+            indices_list = torch.nonzero(torch.as_tensor(list_of_labels[0])==cls_i).tolist()
+            flatten = [index[0] for index in indices_list]
+            p_max = max(list_of_scores[0][flatten])
+            alpha = 1-p_max
+            alpha_values_src[cls_i-1] = alpha
+        else:
+            continue
+
+    for cls_i in range(1,num_classes,1):
+        if cls_i in list_of_labels[1]:
+            indices_list = torch.nonzero(torch.as_tensor(list_of_labels[1])==cls_i).tolist()
+            flatten = [index[0] for index in indices_list]
+            p_max = max(list_of_scores[1][flatten])
+            alpha = 1-p_max
+            alpha_values_tgt[cls_i-1] = alpha
+        else:
+            continue
+        
+    alphas = torch.stack([alpha_values_src, alpha_values_tgt])
+
+    return src_prototypes, tgt_prototypes, alphas
 
 def compute_CV(features, labels, ave_CxA, class_num):
     """
@@ -125,10 +264,10 @@ def compute_CV(features, labels, ave_CxA, class_num):
     C = class_num
     A = features.size(1) # feat dim
 
-    var_temp = torch.zeros(C, A, A).cuda() # store target intra class variance
+    var_temp = torch.zeros((C, A, A), device='cuda') # store target intra class variance
     NxCxFeatures = features.view(N, 1, A).expand(N, C, A)
 
-    onehot = torch.zeros(N, C).cuda() # (N, C)
+    onehot = torch.zeros((N, C), device= 'cuda') # (N, C)
     onehot.scatter_(1, labels.view(-1, 1), 1) # labels --> (b*num_of_labels, 1)
     NxCxA_onehot = onehot.view(N, C, 1).expand(N, C, A)
 
@@ -140,14 +279,21 @@ def compute_CV(features, labels, ave_CxA, class_num):
 
     avg_NxCxA = ave_CxA.expand(N, C, A)
 
-    # import pdb; pdb.set_trace()
+    # import pdb; pdb.set_trace() 
     for c in range(C):
         features_by_sort_c = NxCxFeatures[:, c, :].mul(NxCxA_onehot[:, c, :])
         avg_by_sort_c = avg_NxCxA[:, c, :].mul(NxCxA_onehot[:, c, :])
         var_temp_c = features_by_sort_c - avg_by_sort_c
         var_temp[c] = torch.mm(var_temp_c.permute(1,0), var_temp_c).div(Amount_CxAxA[c])
     
-    return var_temp.detach() # (C, A, A) checked, values seems ok
+    return var_temp.detach() # (C, A, A) checked, values seem ok
+
+def compute_sim(matrix_1, matrix_2):
+    # score = torch.matmul(matrix_1, torch.t(matrix_2))
+    # # score = score.view(bs*layer*num_box, m)
+    # score_normalised = F.softmax(score, dim=0)
+    # score_normalised*
+    raise NotImplementedError
 
 
 def remove_mask_and_warp(src, pos, padding_mask, level_start_index, spatial_shapes):
@@ -225,13 +371,20 @@ class DomainAttention(nn.Module):
         # layers before domain attention will be trained adversarially
         # query --> target sequence, key --> source sequence
         # adversarial training the self attention layer
+
+        # query: torch.Size([1, 2, 256])
+        # key: torch.Size([588, 2, 256])
+        # value: torch.Size([588, 2, 256])
         
+        # import pdb; pdb.set_trace()
+
         r_query, _ = self.cross_attn(
             query=query.transpose(0, 1),
             key=self.grl(self.with_pos_embed(src, pos)).transpose(0, 1),
             value=self.grl(src).transpose(0, 1),
             key_padding_mask=padding_mask,
         )
+
         # residual
         query = query + self.dropout1(r_query.transpose(0, 1))
         query = self.norm1(query)
@@ -241,9 +394,9 @@ class DomainAttention(nn.Module):
         return query
 
 
-class CrossAttention(nn.Module):
+class CrossAttention_agg_encoder(nn.Module):
     def __init__(self, d_model, n_heads, dropout):
-        super(CrossAttention, self).__init__()
+        super(CrossAttention_agg_encoder, self).__init__()
         self.grl = GradientReversal()
         self.cross_attn = nn.MultiheadAttention(d_model, n_heads, dropout)
         self.dropout1 = nn.Dropout(dropout)
@@ -263,24 +416,65 @@ class CrossAttention(nn.Module):
             padding_mask (batch_size, sequence_length): key padding mask
         """
 
-        # keys are srcs + positional embeddings
-        # query input is the space/channel query
-        # layers before domain attention will be trained adversarially
-        # query --> target sequence, key --> source sequence
-        # adversarial training the self attention layer
-        # import pdb; pdb.set_trace()
-        # TODO: set grl before src to align encoder/encoder features
-        r_query, attn_weights = self.cross_attn(
-            query=query.transpose(0, 1),
-            key=self.grl(self.with_pos_embed(src, pos)).transpose(0, 1),
-            value=self.grl(src.transpose(0, 1)), key_padding_mask=padding_mask,
-        )
-        # residual
+        # TODO: local query token aggregation
+        # r_query, attn_weights = self.cross_attn(
+        #     query=query.transpose(0, 1),
+        #     key=self.with_pos_embed(src, pos).transpose(0, 1),
+        #     value=src.transpose(0, 1), key_padding_mask=padding_mask,
+        # )
+
+
+        # TODO 
+        # r_query, attn_weights = self.cross_attn(query=query.transpose(0, 1), key=self.with_pos_embed(src, pos).transpose(0, 1),value=query.transpose(0, 1), key_padding_mask=padding_mask,)
+        r_query, attn_weights = self.cross_attn(query=self.with_pos_embed(src, pos).transpose(0, 1), key=query.transpose(0, 1), value=query.transpose(0, 1), key_padding_mask=None,)
+
+        query = src + self.dropout1(r_query.transpose(0, 1))
+        query = self.norm1(query)
+        # linear layer + dropout layer + layer norm
+        query = query + self.dropout2(self.linear(query))
+        query = self.norm2(query)
+
+        return query, attn_weights
+
+class CrossAttention_agg_prototypes(nn.Module):
+    def __init__(self, d_model, n_heads, dropout):
+        super(CrossAttention_agg_prototypes, self).__init__()
+        self.grl = GradientReversal()
+        self.cross_attn = nn.MultiheadAttention(d_model, n_heads, dropout)
+        self.dropout1 = nn.Dropout(dropout)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.linear = nn.Linear(d_model, d_model)
+        self.dropout2 = nn.Dropout(dropout)
+        self.norm2 = nn.LayerNorm(d_model)
+
+    @staticmethod
+    def with_pos_embed(tensor, pos):
+        return tensor if pos is None else tensor + pos
+
+    def forward(self, query, src, pos=None, padding_mask=None):
+        """ Args:
+            query (batch_size, num_queries, d_model): discriminator query
+            src, pos (batch_size, sequence_length, d_model): patch tokens and position encodings
+            padding_mask (batch_size, sequence_length): key padding mask
+        """
+
+        # TODO: local query token aggregation
+        # r_query, attn_weights = self.cross_attn(
+        #     query=query.transpose(0, 1),
+        #     key=self.with_pos_embed(src, pos).transpose(0, 1),
+        #     value=src.transpose(0, 1), key_padding_mask=padding_mask,
+        # )
+
+        # TODO 
+        # import pdb; pdb.set_trace
+        r_query, attn_weights = self.cross_attn(query=query.transpose(0, 1), key=self.with_pos_embed(src, pos).transpose(0, 1),value=src.transpose(0, 1), key_padding_mask=padding_mask,)
+
         query = query + self.dropout1(r_query.transpose(0, 1))
         query = self.norm1(query)
         # linear layer + dropout layer + layer norm
         query = query + self.dropout2(self.linear(query))
         query = self.norm2(query)
+
         return query, attn_weights
 
 class CrossAttentionMemory(nn.Module):
