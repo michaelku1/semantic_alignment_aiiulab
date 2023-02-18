@@ -40,6 +40,8 @@ import copy
 from .memory_ema import Memory
 from .utils import compute_CV, weighted_aggregate, weighted_aggregate_tmp, find_thresh
 
+from .debug_tools import *
+
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 
@@ -64,7 +66,6 @@ class DeformableDETR(nn.Module):
         keep_rate = 0.996
         # TODO: returns updated prototypes
         if ema:
-            # self.memory = Memory(num_classes, transformer.d_model, keep_rate = keep_rate, num_feature_levels=num_feature_levels)
             self.memory = Memory(num_classes, transformer.d_model, keep_rate = keep_rate, num_feature_levels=num_feature_levels)
 
         self.cos = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
@@ -74,9 +75,7 @@ class DeformableDETR(nn.Module):
         # self.cross_attn_dec = CrossAttention_agg_prototypes(transformer.d_model, transformer.nhead, 0.1)
         # self.cross_attn = CrossAttention_agg_encoder(transformer.d_model, transformer.nhead, 0.1)
         self.ema = ema
-        # self.m_items = nn.Parameter(torch.zeros((2, num_classes-1, transformer.d_model), dtype=torch.float, requires_grad=True).cuda()
-        # self.m_items = torch.zeros((2, num_classes-1, transformer.d_model), dtype=torch.float, requires_grad=True).cuda()
-
+        self.m_items = torch.full((2, num_classes-1, transformer.d_model), 1e-6).cuda()
 
         self.num_queries = num_queries
         self.transformer = transformer
@@ -136,7 +135,7 @@ class DeformableDETR(nn.Module):
             nn.init.xavier_uniform_(proj[0].weight, gain=1)
             nn.init.constant_(proj[0].bias, 0)
 
-        # if two-stage, the last class_embed and bbox_embed is for region proposal generation
+        # NOTE if two-stage, the last class_embed and bbox_embed is for region proposal generation
         num_pred = (transformer.decoder.num_layers + 1) if two_stage else transformer.decoder.num_layers
         if with_box_refine:
             self.class_embed = _get_clones(self.class_embed, num_pred)
@@ -304,7 +303,7 @@ class DeformableDETR(nn.Module):
             # mask_flatten = torch.cat(mask_flatten, 1)
             # TODO add lvl postional embedding to the original positional embedding
             # lvl_pos_embed_flatten = torch.cat(lvl_pos_embed_flatten, 1)
-
+        
         if self.training:
             B = outputs_class.shape[1]
             assert B == memory.shape[0]
@@ -314,7 +313,7 @@ class DeformableDETR(nn.Module):
 
             # thresh = 0.9 * max(0.5, 1-(cur_epoch/total_epoch))
 
-            thresh = 0.9
+            thresh = 0.8
             thresh_tmp_list = [] # record occuring instances
             try:
                 keep = [torch.nonzero(outputs_class_conf[b]>thresh).unsqueeze(0) for b in range(outputs_class_conf.shape[0])] # batch wise
@@ -383,6 +382,8 @@ class DeformableDETR(nn.Module):
                 # and from relative [0, 1] to absolute [0, height] coordinates
                 img_sizes = targets[batch_idx]["size"]
                 img_h, img_w = img_sizes.unbind(0)
+
+                # since box tensor is (x,y,x,y)
                 scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=0)
 
                 for b in range(boxes_rescaled.shape[0]):
@@ -393,14 +394,18 @@ class DeformableDETR(nn.Module):
                 scores, _ = torch.max(outputs_class_conf[batch_idx][keep_tmp], dim=1)
                 list_of_scores_enc.append(scores)
 
-            list_of_rois_src = [] # (bs, scale_dim, num_boxes, 256)
+            # 1. DEBUG: check pseudo label quality
+            # check_pseudo_boxes(B, targets, samples, rescaled_boxes_enc, list_of_scores_enc, list_of_labels_enc)
+
+            ### compute src prototypes (NOTE: checked)
             src_boxes = rescaled_boxes_enc[:B//2]
             src_scores = list_of_scores_enc[:B//2]
             src_labels = list_of_labels_enc[:B//2]
 
             # spatial_scales = [1/8.0, 1/16.0, 1/32.0, 1/64.0] # multi-scale
             spatial_scales = [1/32.0] # single-scale
-            
+
+            list_of_rois_src = [] # [1, 2] (num_boxes, 256)
             ### compute src rois first
             for m, scale in zip(memory_reshaped, spatial_scales):
                 list_tmp = []
@@ -409,108 +414,104 @@ class DeformableDETR(nn.Module):
                     # input dim: (N, C, H, W)
                     rois = torchvision.ops.roi_align(m[batch_idx].unsqueeze(0), [src_boxes[batch_idx]], output_size=(7, 7), spatial_scale=scale, aligned=True).mean(3).mean(2)
                     list_tmp.append(rois)
-                    list_of_rois_src.append(list_tmp)
 
+                list_of_rois_src.append(list_tmp)
+
+            # NOTE checked
             ### aggregate src prototypes
-            list_of_src_prototype = []
+            list_of_src_prototype = [] # [scale], (num_classes, feat_dim)
             for roi_group in list_of_rois_src:
                 src_prototypes_enc, _ = weighted_aggregate_tmp(B, src_labels, roi_group, src_scores, self.num_classes, self.hidden_dim)
                 list_of_src_prototype.append(src_prototypes_enc)
             
-            src_prototypes_enc = torch.stack(list_of_src_prototype)
-            # (B, num_classes, feat dim)
-            src_prototypes_enc = F.normalize(src_prototypes_enc, dim=-1)
-            # average across batches
-            src_prototypes_enc = src_prototypes_enc.mean(0)
 
-            ### BUG in case of empty soruce gts, we take src features from memory
-            if sum(sum(src_prototypes_enc)) == 0:
+            src_prototypes_enc = torch.stack(list_of_src_prototype) # (B, cls_num, feat_dim)
+            src_prototypes_enc = F.normalize(src_prototypes_enc, dim=-1) # normalize
+            src_prototypes_enc = src_prototypes_enc.mean(0) # average across batches (cls_num, feat_dim)
+
+            # 2. DEBUG: log prototype values
+
+            # NOTE checked
+            ### NOTE in case of empty soruce gts, we take src features from memory
+            for cls_i in range(src_prototypes_enc.shape[0]):
                 # (scale, bs, class, feat_dim)
-                src_prototypes_enc = self.m_items[0,:,:].squeeze(0).detach()
+                # if empty src targets, the corresponding elements are guaranteed to be zeros
+                if src_prototypes_enc[cls_i].sum() == 0:
+                    src_prototypes_enc[cls_i] = self.m_items[0,cls_i,:].detach()
 
-            tgt_boxes = rescaled_boxes_enc[B//2:]
-            tgt_scores = list_of_scores_enc[B//2:]
-            tgt_labels = list_of_labels_enc[B//2:]
 
-            list_of_rois_tgt = [] # [bs, scale_dim] (num_boxes, 256, h, w)
+            # 3. DEBUG: check filled prototype values  
+            tgt_boxes = rescaled_boxes_enc[B//2:] # [bs] (, num_rois)
+            tgt_scores = list_of_scores_enc[B//2:] # [bs] (, num_rois)
+            tgt_labels = list_of_labels_enc[B//2:] # [bs] [num_rpis]
+
+            list_of_rois_tgt = [] # [scale_dim, bs, ] (num_boxes, 256, h, w)
             for m, scale in zip(memory_reshaped, spatial_scales):
                 list_tmp = []
+                # B//2 since we take features from the original encoder
                 for batch_idx in range(0, B//2, 1):
                     # input dim: (N, C, H, W)
-                    # rois = torchvision.ops.roi_align(m[batch_idx].unsqueeze(0), [tgt_boxes[batch_idx]], output_size=(7,7), spatial_scale=scale, aligned=True).mean(3).mean(2)
                     rois = torchvision.ops.roi_align(m[batch_idx].unsqueeze(0), [tgt_boxes[batch_idx]], output_size=(7,7), spatial_scale=scale, aligned=True)
                     list_tmp.append(rois)
                 list_of_rois_tgt.append(list_tmp)
 
+            # 4. DEBUG: check tgt prototype attention
+            # check_prototype_attention_map(B, src_prototypes_enc, memory_reshaped, tgt_boxes, targets)
+            # breakpoint()
 
-            # BUG mismatch num_rois dim
             list_of_weighted_tgt_rois_final = []
             # torch.Size([1, 11, 256, 7, 7])
             for scale_i in range(len(spatial_scales)):
                 list_of_weighted_tgt_rois = []
                 list_of_rois_tgt_tmp = list_of_rois_tgt[scale_i]
+
                 for bs_i in range(B//2):
-                    # rois_target = torch.stack(list_of_rois_tgt[bs_i][scale_i])
-                    rois_target = list_of_rois_tgt_tmp[bs_i]
-
-                    ### remove zero entries
-                    # non_zero_index = torch.nonzero(src_prototypes_enc.sum(2)!=0.0)[:,1]
-                    # non_zero_entries = [index.item() for index in non_zero_index]
-
-                    # in case its all zeros
-                    # if len(non_zero_entries)==0:
-                    #     src_prototypes_enc_clone = src_prototypes_enc
-                    # else:
-                    #     src_prototypes_enc_clone = src_prototypes_enc[:, non_zero_entries]
-
-                    # import pdb; pdb.set_trace()
+                    rois_target = list_of_rois_tgt_tmp[bs_i] # (num_rois, feat_dim, h, w)
 
                     ### similarity: compute binary mask
-                    # slide the target rois with the pre defined kernel
-                    filters = src_prototypes_enc.squeeze(0).unsqueeze(-1).unsqueeze(-1)
-                    # (num_rois, num_classes, width, height)
-
-                    thresh_mask = 0.9
-                    # thresh_mask = 0.9 * max(0.5, 1-(cur_epoch/total_epoch))
-                    # breakpoint()
-                    output_tensor = F.conv2d(rois_target, filters).sigmoid()
-                    # output_tensor = F.conv2d(rois_target.squeeze(0), filters).sigmoid()
-                    binary_masks =  torch.where(output_tensor>thresh_mask, 1, 0) # (11, 9, 7, 7)
+                    filters = src_prototypes_enc.squeeze(0).unsqueeze(-1).unsqueeze(-1) # (num_class, feat_dim, 1, 1)
+                    thresh_mask = 0.9 * max(0.5, 1-(cur_epoch/total_epoch))
+                    
+                    scores = F.relu(F.conv2d(rois_target, filters)) # (num_rois, num_classes, 7, 7)
+                    binary_masks = torch.where(scores>thresh_mask, 1, 0) # (num_rois, num_classes, 7, 7)
 
                     # torch.save(output_tensor, f'./visualization/output_tensor/output_tensor_{iter_i}.pt')
                     # torch.save(binary_masks, f'./visualization/binary_masks/binary_masks_{iter_i}.pt')
 
+                    # 5. DEBUG: visualize masks
 
-                    # hard thresholding
-                    filtered_rois_target_list = [] # class wise
+                    # NOTE output contains binary masks for all classes, so we use the predicted 
+                    # confidence to get the corresponding mask
+                    filtered_rois_target_list = [] # [num_rois] (,256)
+                    # filter each roi with the binary mask
                     for roi_index in range(rois_target.shape[0]):
-                        # rois_target: torch.Size([1, 11, 256, 7, 7])
-                        # binary_masks: (11, 9, 7, 7)
                         tgt_label = tgt_labels[bs_i][roi_index]
-                        # try:
-                        binary_mask = binary_masks[roi_index, tgt_label-1,:,:]
-                        # except IndexError:
-                        #     import pdb; pdb.set_trace()
+                        binary_mask = binary_masks[roi_index, tgt_label-1,:,:] #  (7, 7)
                         rois_target_tmp = rois_target.squeeze(0)[roi_index] # (256, 7, 7)
-                        filtered_rois_target = rois_target_tmp * binary_mask
-                        mask_pooled = filtered_rois_target.mean(-1).mean(-1)
+                        filtered_rois_target = rois_target_tmp * binary_mask # (256, 7, 7)
+                        mask_pooled = filtered_rois_target.mean(-1).mean(-1) # avg pool
+
+                        # append along rois num
                         filtered_rois_target_list.append(mask_pooled)
 
-                    # batch-wise
+                    # DEBUG: visualize mask average pooled features
+                    
                     try:
                         filtered_rois_target = torch.stack(filtered_rois_target_list).unsqueeze(0)
                     except RuntimeError:
-                        import pdb; pdb.set_trace()
+                        breakpoint()
 
+                    # NOTE will trigger if wrong computation w/ binary masks
                     if len(filtered_rois_target_list) == 0:
-                        import pdb; pdb.set_trace()
+                        breakpoint()
 
+                    # append along batch dim
                     list_of_weighted_tgt_rois.append(filtered_rois_target)
 
-                # (11, 256)
-                # unsqueeze to get desired input dim for weighted function
-                # filtered_rois_target = torch.stack(filtered_rois_target_list).unsqueeze(0)                
+                # append along scale
                 list_of_weighted_tgt_rois_final.append(list_of_weighted_tgt_rois) # BUG fix this to incorporate batch dim
+                
+
                 ### similarity: compute similarity only
                 # try:
                     # scores = torch.matmul(rois_target.squeeze(0), src_prototypes_enc_clone.transpose(2,1))
@@ -529,27 +530,26 @@ class DeformableDETR(nn.Module):
                 # reweighted_rois_target = torch.mul(max_scores.unsqueeze(-1), rois_target) # (1, num_rois, )
                 # list_of_weighted_tgt_rois.append(reweighted_rois_target)
             
+            ### perform weighted aggregation across tgt rois
             list_of_tgt_prototypes= []
             for roi_scale_group in list_of_weighted_tgt_rois_final:
-                # import pdb; pdb.set_trace()
                 tgt_prototypes_enc, _ = weighted_aggregate_tmp(B, tgt_labels, roi_scale_group, tgt_scores, self.num_classes, self.hidden_dim)
-                tgt_prototypes_enc = F.normalize(tgt_prototypes_enc, dim=-1) # BUG
+                tgt_prototypes_enc = F.normalize(tgt_prototypes_enc, dim=-1)
                 list_of_tgt_prototypes.append(tgt_prototypes_enc)
+            
             
             # (scale, num_classes, feat_dim)
             tgt_prototypes_enc = torch.stack(list_of_tgt_prototypes).squeeze(0)
             
-            # breakpoint()
-            # stack towards bs size
+            # DEBUG: check tgt prototype attention
+            # check_prototype_attention_map(tgt_prototypes_enc, memory_reshaped, tgt_boxes)
+            
             prototypes = torch.stack([src_prototypes_enc, tgt_prototypes_enc], dim=0)
-
 
             # updated_src_prototypes_enc = torch.repeat_interleave(src_prototypes_enc, 2, dim=0)
             # updated_src_prototypes_enc = updated_src_prototypes_enc.view(memory.shape[0], len(spatial_scales), *updated_src_prototypes_enc.shape[1:])
-
             # updated_src_prototypes_enc = src_prototypes_enc.view(memory.shape[0], len(spatial_scales), *updated_src_prototypes_enc.shape[1:])
             # updated_src_prototypes_enc = tgt_prototypes_enc.view(memory.shape[0], len(spatial_scales), *updated_src_prototypes_enc.shape[1:])
-
 
             ### aggregate encoder features from prototypes
             # updated_src_prototypes_enc = updated_src_prototypes_enc.view(memory.shape[0], len(spatial_scales), *updated_src_prototypes_enc.shape[1:])
@@ -583,8 +583,6 @@ class DeformableDETR(nn.Module):
             # class_embeds_enc = torch.stack(class_embeds_enc_list)
             # class_embeds_enc = class_embeds_enc.view(-1, *class_embeds_enc.shape[2:])
 
-            # import pdb; pdb.set_trace()
-
             ### perform roi align after
             # list_of_rois_enc = []
             # for batch_idx in range(B//2):
@@ -593,16 +591,25 @@ class DeformableDETR(nn.Module):
             #     list_of_rois_enc.append(rois)
             # src_prototypes_enc, source_alphas = weighted_aggregate_source(B, list_of_labels_enc, list_of_rois_enc, list_of_scores_enc, self.num_classes, self.hidden_dim)
 
-            # import pdb; pdb.set_trace()
+            
             source_alphas = None
+            
+            prototypes_copy = prototypes.clone()
             if self.ema:
-                # memory here only performs ema 
-                self.m_items = self.memory(self.m_items, prototypes)
-                updated_class_prototypes = self.m_items
-            else:
-                updated_class_prototypes = prototypes
+                new_memory = self.memory(self.m_items, prototypes)
+                self.m_items = new_memory
+                # updated_class_prototypes = new_memory
 
-            # import pdb; pdb.set_trace()
+                ### fill missing class features with memory features (src filled already)
+                for B_i in range(prototypes.shape[0]):
+                    for cls_i, value in enumerate(prototypes[B_i]):
+                        if value.sum().item() == 0.:
+                            prototypes_copy[B_i][cls_i] = self.m_items[B_i][cls_i].detach()
+
+                # finally assigned back to prototypes
+                prototypes = prototypes_copy
+
+            # breakpoint()
             # TODO reshape to (batch,...) after ema
             # updated_class_embeds_enc = updated_class_embeds_enc.view(len(spatial_scales), memory.shape[0], *updated_class_embeds_enc.shape[1:])
 
@@ -706,16 +713,15 @@ class DeformableDETR(nn.Module):
 
         # TODO add prototypes to outputs
         if self.training:
-            src_prototypes_enc = updated_class_prototypes[0, :, :]
-            tgt_prototypes_enc = updated_class_prototypes[1, :, :]
-
+            # src_prototypes_enc = updated_class_prototypes[0, :, :]
+            # tgt_prototypes_enc = updated_class_prototypes[1, :, :]
             # src_prototypes_dec = class_embeds_dec[0]
             # tgt_prototypes_dec = class_embeds_dec[1]
 
             if len(thresh_tmp_list) > 0:
                 out['thresh_change_occurence'] = thresh_tmp_list
 
-            out['prototypes_enc'] = {'src_prototypes_enc': src_prototypes_enc, 'tgt_prototypes_enc': tgt_prototypes_enc, 'alpha_values': source_alphas}
+            out['prototypes_enc'] = {'src_prototypes_enc': prototypes[0], 'tgt_prototypes_enc': prototypes[1], 'alpha_values': source_alphas}
             # import pdb; pdb.set_trace()
             # out['prototypes_dec'] = {'src_prototypes_dec': src_prototypes_dec, 'tgt_prototypes_dec': tgt_prototypes_dec}
 
@@ -1073,7 +1079,7 @@ class SetCriterion(nn.Module):
 
     # L2 loss
     def distance(self, src_feat, tgt_feat):
-        eps = 1e-9
+        eps = 1e-6
         # BUG Function 'PowBackward0' returned nan values in its 0th output
         output = torch.pow((src_feat - tgt_feat), 2.0).mean() + eps
 
@@ -1086,7 +1092,6 @@ class SetCriterion(nn.Module):
         intra_loss = 0.
         inter_loss = 0.
 
-        eps = 1e-6
         # target.register_hook(lambda grad: print(torch.isnan(grad).any()))
         # source.register_hook(lambda grad: print(torch.isnan(grad).any()))
 
@@ -1094,72 +1099,18 @@ class SetCriterion(nn.Module):
         for cls_idx in range(self.num_classes-1):
             tmp_src_feat_1 = source[cls_idx, :] # per class prototype
             tmp_tgt_feat_1 = target[cls_idx, :] # per class prototype
-
-            # print(tmp_tgt_feat_1)
             
             # tmp_tgt_feat_1.register_hook(lambda grad: print(torch.isnan(grad).any()))
             # tmp_tgt_feat_1.register_hook(lambda grad: breakpoint() if torch.isnan(grad).any() == True else print(grad))
 
             # intra
-            # intra_loss = intra_loss + torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_1))
-            intra_loss = intra_loss + self.distance(tmp_src_feat_1, tmp_tgt_feat_1)
+            intra_loss = intra_loss + torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_1))
+            # intra_loss = intra_loss + self.distance(tmp_src_feat_1, tmp_tgt_feat_1)
 
             # inter takes into account the current and all other classes
             for cls_idx_next in range(cls_idx+1, self.num_classes-1):
                 tmp_src_feat_2 = source[cls_idx_next, :]
                 tmp_tgt_feat_2 = target[cls_idx_next, :]
-
-                # print(tmp_tgt_feat_2)
-                # print(tmp_src_feat_2)
-
-                # inter_loss = inter_loss + alpha_values[0][cls_idx] * alpha_values[1][cls_idx] * torch.pow(
-                #     (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin,
-                #     2) * torch.pow(
-                #     torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2)),
-                #               torch.tensor(0).float().cuda()), 2.0)
-
-                # inter_loss = inter_loss + alpha_values[0][cls_idx] * alpha_values[1][cls_idx] * torch.pow(
-                #     (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))) / margin,
-                #     2) * torch.pow(
-                #     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),
-                #               torch.tensor(0).float().cuda()), 2.0)
-
-                # inter_loss = inter_loss + alpha_values[0][cls_idx] * alpha_values[1][cls_idx] * torch.pow(
-                #     (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2))) / margin,
-                #     2) * torch.pow(
-                #     torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),
-                #               torch.tensor(0).float().cuda()), 2.0)
-
-                # inter_loss = inter_loss + alpha_values[0][cls_idx] * alpha_values[1][cls_idx] * torch.pow(
-                #     (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2))) / margin,
-                #     2) * torch.pow(
-                #     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
-                #               torch.tensor(0).float().cuda()), 2.0)
-
-                ### w/o sqrt
-                # inter_loss =  inter_loss + torch.pow(
-                #     (margin - (self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin,
-                #     2) * torch.pow(
-                #     torch.max(margin - (self.distance(tmp_src_feat_1, tmp_src_feat_2)),
-                #               torch.tensor(0).float().cuda()), 2.0)
-
-                # inter_loss =  inter_loss + torch.pow(
-                #     (margin - (self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))) / margin,
-                #     2) * torch.pow(
-                #     torch.max(margin - (self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),
-                #               torch.tensor(0).float().cuda()), 2.0)
-
-                # inter_loss =  inter_loss + torch.pow(
-                #     (margin - (self.distance(tmp_src_feat_1, tmp_tgt_feat_2))) / margin,
-                #     2) * torch.pow(
-                #     torch.max(margin - (self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),
-                #               torch.tensor(0).float().cuda()), 2.0)
-
-                # inter_loss = inter_loss + torch.pow(
-                #     (margin - (self.distance(tmp_tgt_feat_1, tmp_src_feat_2))) / margin,
-                #     2) * torch.pow(
-                #     torch.max(margin - (self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
-                #               torch.tensor(0).float().cuda()), 2.0)
 
                 ### original implementation
                 inter_loss =  inter_loss + torch.pow(
@@ -1185,15 +1136,6 @@ class SetCriterion(nn.Module):
                     2) * torch.pow(
                     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
                               torch.tensor(0).float().cuda()), 2.0)
-
-                # inter_loss =  inter_loss + (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2)) / margin)
-
-                # inter_loss =  inter_loss + (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)) / margin)
-                    
-                # inter_loss =  inter_loss + (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2)) / margin)
-                    
-                # inter_loss =  inter_loss + (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)) / margin)
-                    
 
         # average over all classes*batch_dim 
         intra_loss = intra_loss / source.shape[0]
