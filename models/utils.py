@@ -9,6 +9,18 @@ import torch.nn.functional as F
 import numpy as np
 import gc
 
+# a temporary recursive solution to avoid empty keep 
+def find_thresh(outputs_class_conf, thresh, keep):
+    # import pdb; pdb.set_trace()
+    if keep[0].numel() == 0:
+        thresh = thresh - 0.05 # initial
+        new_keep = [torch.nonzero(outputs_class_conf[b]>thresh).unsqueeze(0) for b in range(outputs_class_conf.shape[0])]
+        return find_thresh(outputs_class_conf, thresh, new_keep)
+    else:
+        # import pdb; pdb.set_trace()
+        # new_keep = [torch.nonzero(outputs_class_conf[b]>thresh).unsqueeze(0) for b in range(outputs_class_conf.shape[0])]
+        return keep, thresh
+
 def weighted_aggregate(batch_d, list_of_labels, list_of_rois, list_of_scores, num_classes, hidden_dim):
     ### weighted aggregate
     # labels existing (sorted)

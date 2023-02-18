@@ -4,17 +4,24 @@
 
 ## train from scratch:
 
-CUDA_VISIBLE_DEVICES=4 GPUS_PER_NODE=1 ./tools/run_dist_launch.sh 1 --master_port 29106 python main.py --config_file configs/contrastive.yaml --opts OUTPUT_DIR ./exps/contrastive_subset_retrain/ TRAIN.EPOCHS 150 DATASET.NUM_CLASSES 9 TRAIN.BATCH_SIZE 2 FINETUNE False EMA True MODEL.STAGE train_AQT
+CUDA_VISIBLE_DEVICES=0 GPUS_PER_NODE=1 ./tools/run_dist_launch.sh 1 --master_port 29119 python main.py --config_file configs/contrastive_feat_aug.yaml --opts OUTPUT_DIR ./exps/test TRAIN.EPOCHS 150 DATASET.NUM_CLASSES 9 TRAIN.BATCH_SIZE 2 EMA True FINETUNE False MODEL.STAGE train_AQT DATASET.DA_MODE uda RESUME exps/pretrain_source/checkpoint0099.pth
 
-## resume training:
+## train feature augmentation (from pretrained source):
 
-CUDA_VISIBLE_DEVICES=0 GPUS_PER_NODE=1 ./tools/run_dist_launch.sh 1 --master_port 29110 python main.py --config_file configs/contrastive.yaml --opts OUTPUT_DIR ./exps/exp1/contrastive TRAIN.EPOCHS 100 DATASET.NUM_CLASSES 9 TRAIN.BATCH_SIZE 2 FINETUNE False RESUME ${MDOEL_CHECKPONIT_PATH.pth}
-
-## finetune, retrain (different from resume training):
-
-CUDA_VISIBLE_DEVICES=0 GPUS_PER_NODE=1 ./tools/run_dist_launch.sh 1 --master_port 29110 python main.py --config_file configs/contrastive.yaml --opts OUTPUT_DIR ./exps/exp1/contrastive TRAIN.EPOCHS 100 DATASET.NUM_CLASSES 9 TRAIN.BATCH_SIZE 2 FINETUNE True RESUME ${MDOEL_CHECKPONIT_PATH.pth} MODEL.STAGE ${stage_name}
+CUDA_VISIBLE_DEVICES=0 GPUS_PER_NODE=1 ./tools/run_dist_launch.sh 1 --master_port 29119 python main.py --config_file configs/contrastive_feat_aug.yaml --opts OUTPUT_DIR ./exps/test TRAIN.EPOCHS 150 DATASET.NUM_CLASSES 9 TRAIN.BATCH_SIZE 2 EMA True FINETUNE True FEAT_AUG True MODEL.STAGE train_AQT RESUME exps/pretrain_source/checkpoint0099.pth
 
 ## evaluation:
 
 CUDA_VISIBLE_DEVICES=0 GPUS_PER_NODE=1 ./tools/run_dist_launch.sh 1 --master_port 29110 python main.py --config_file configs/contrastive.yaml --opts OUTPUT_DIR ./exps/exp1/contrastive TRAIN.EPOCHS 100 DATASET.NUM_CLASSES 9 TRAIN.BATCH_SIZE 2 FINETUNE False RESUME ${MDOEL_CHECKPONIT_PATH.pth} EVAL True
 
+## cross-scale
+
+CUDA_VISIBLE_DEVICES=4 GPUS_PER_NODE=1 ./tools/run_dist_launch.sh 1 --master_port 29111 python main.py --config_file configs/contrastive.yaml --opts OUTPUT_DIR ./exps/test TRAIN.EPOCHS 150 DATASET.NUM_CLASSES 4 TRAIN.BATCH_SIZE 2 MODEL.STAGE train_AQT EMA True DATASET.DA_MODE uda MODEL.NUM_FEATURE_LEVELS 4
+
+## DEBUG (e.g prob or visualize)
+
+CUDA_VISIBLE_DEVICES=0 GPUS_PER_NODE=1 ./tools/run_dist_launch.sh 1 --master_port 29114 python main.py --config_file configs/contrastive.yaml  --opts OUTPUT_DIR exps/subset_exps TRAIN.EPOCHS 200 DATASET.NUM_CLASSES 4 TRAIN.BATCH_SIZE 2 MODEL.STAGE train_AQT DATASET.DA_MODE uda EMA True CONTRASTIVE True DEBUG True
+
+## source warmup
+
+CUDA_VISIBLE_DEVICES=4,5,6,7 GPUS_PER_NODE=4 ./tools/run_dist_launch.sh 4 --master_port 29114 python main.py --config_file configs/contrastive.yaml  --opts OUTPUT_DIR exps/pretrain_source_subset TRAIN.EPOCHS 300 DATASET.NUM_CLASSES 4 TRAIN.BATCH_SIZE 2  MODEL.STAGE train_AQT DATASET.DA_MODE source_only

@@ -36,7 +36,7 @@ from .deformable_transformer_contrastive import build_deforamble_transformer
 from .utils import GradientReversal
 import copy
 from .memory_ema import Memory
-from .utils import compute_CV, weighted_aggregate
+from .utils import compute_CV, weighted_aggregate, weighted_aggregate_tmp
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
@@ -59,10 +59,12 @@ class DeformableDETR(nn.Module):
             two_stage: two-stage Deformable DETR
         """
         super().__init__()
-        keep_rate = 0.9
+        keep_rate = 0.999
         # TODO: returns updated prototypes
         if ema:
-            self.memory = Memory(num_classes, transformer.d_model, keep_rate = keep_rate)
+            self.memory = Memory(num_classes, transformer.d_model, keep_rate = keep_rate, num_feature_levels=num_feature_levels)
+        # self.m_items = F.normalize(torch.rand((2*num_feature_levels, num_classes, transformer.d_model), dtype=torch.float), dim=1).cuda()
+        self.m_items = torch.zeros(2, num_classes-1, transformer.d_model).cuda()
 
         self.ema = ema
         self.num_queries = num_queries
@@ -72,7 +74,7 @@ class DeformableDETR(nn.Module):
         self.matcher = HungarianMatcher(cost_class = 2.0, cost_bbox = 5.0, cost_giou = 2.0)
         # import pdb; pdb.set_trace()
         self.num_classes = num_classes
-        # shared linear layer for the classification head
+
         self.class_embed = nn.Linear(hidden_dim, num_classes) # class embeddings
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3) # bbox embeddings
         self.num_feature_levels = num_feature_levels
@@ -168,7 +170,7 @@ class DeformableDETR(nn.Module):
                 nn.init.constant_(layer.bias, 0)
 
 
-    def forward(self, samples: NestedTensor, targets, cur_iter_num, total_iter_num):
+    def forward(self, samples: NestedTensor, targets, cur_epoch, total_epoch):
         """ The forward expects a NestedTensor, which consists of:
                - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
                - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
@@ -186,18 +188,7 @@ class DeformableDETR(nn.Module):
         if not isinstance(samples, NestedTensor):
             samples = nested_tensor_from_tensor_list(samples)
 
-        # if self.debug:
-        #     features, pos = self.backbone(samples)
-
-        #     # import pdb; pdb.set_trace()
-        #     features = nn.AdaptiveAvgPool2d((1,1))(features[0].tensors)
-        #     features = features.mean(3).mean(2)
-        
-        #     return features
-
         features, pos = self.backbone(samples)
-
-        # import pdb; pdb.set_trace()
 
         # store backbone features and mask tokens
         srcs = []
@@ -228,18 +219,20 @@ class DeformableDETR(nn.Module):
                 pos.append(pos_l)
 
         query_embeds = None
+
         if not self.two_stage:
             query_embeds = self.query_embed.weight # weights are the only things you need
         
         # TODO: debug mode, only allow debug mode at test time and targets are returned only at test time
         if self.debug:
-            hs, memory, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output = self.transformer(srcs, masks, pos, query_embeds)
+            hs, memory, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output, _ = self.transformer(srcs, masks, pos, query_embeds)
             # import pdb; pdb.set_trace()
         else:
             # tracemalloc.start()
-            hs, memory, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output = self.transformer(srcs, masks, pos, query_embeds)
+            hs, memory, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output, _ = self.transformer(srcs, masks, pos, query_embeds)
             # print(tracemalloc.get_traced_memory())
         
+        # import pdb; pdb.set_trace()
         outputs_classes = []
         outputs_coords = []
 
@@ -255,7 +248,6 @@ class DeformableDETR(nn.Module):
             outputs_class = self.class_embed[lvl](hs[lvl]) # linear layer
 
             tmp = self.bbox_embed[lvl](hs[lvl]) # mlp layer
-
 
             if reference.shape[-1] == 4:
                 # deformable-detr predicts relative coordinates, unlike detr, which predicts absolute coordinates
@@ -280,30 +272,47 @@ class DeformableDETR(nn.Module):
         # elif scale == 2:
         #     spatial_scale = 1/32.0 # default
 
-        # TODO: inter-, intra- contrastive loss
         if self.training:
             B = outputs_class.shape[1] # get batch size
             assert B == memory.shape[0]
 
             # TODO consider target outputs only
-            last_layer_out = outputs_class[-1][B//2:] # bs is after layer num
+            # last_layer_out = outputs_class[-1][B//2:] # bs is after layer num
+            last_layer_out = outputs_class[-1]
 
 
             ### BUG should we use MLP outputs or last layer softmax outputs
-            outputs_class_conf = F.softmax(last_layer_out, -1) # (2, 300, 9)
+            # outputs_class_conf = F.softmax(last_layer_out, -1)[:B//2] # (2, 300, 9)
+            outputs_class_conf = F.softmax(last_layer_out, -1)
+            # decreases linearly
+            # thresh = 0.9 * max(0.5, 1-(cur_epoch/total_epoch))
 
-            # increases linearly
-            # thresh = 0.6 * cur_iter_num/total_iter_num
-
-            # default is 0.6
-            thresh = 0.6
+            thresh = 0.9
 
             # # size: [torch.Size([31, 2]), torch.Size([11, 2])]
             # nonzero returns object query index and the argmax of the class distribution
             keep = [torch.nonzero(outputs_class_conf[b]>thresh).unsqueeze(0) for b in range(outputs_class_conf.shape[0])] # batch wise
+
+            thresh_tmp_list = [] # record occuring instances
+            try:
+                keep = [torch.nonzero(outputs_class_conf[b]>thresh).unsqueeze(0) for b in range(outputs_class_conf.shape[0])] # batch wise
+                find_empty = [keep_tensor for keep_tensor in keep if keep_tensor.numel() == 0]
+                assert len(find_empty) == 0 # assert error if empty
             
+            # BUG: only valid when only target class confidences are used 
+            except AssertionError:
+                # new_keep, new_thresh = find_thresh(outputs_class_conf_tmp, thresh_tmp, keep_tmp)
+                for i,v in enumerate(keep):
+                    # import pdb; pdb.set_trace()
+                    if v.numel()==0:
+                        thresh_tmp = torch.max(outputs_class_conf[i], -1)[0].max()-0.05
+                        outputs_class_conf_tmp = outputs_class_conf[i] 
+                        keep_tmp = torch.nonzero(outputs_class_conf_tmp>thresh_tmp).unsqueeze(0)
+                        keep[i] = keep_tmp
+                        thresh_tmp_list.append(thresh_tmp)
+
             # import pdb; pdb.set_trace()
-            ### decoder features
+            ## decoder features
             # use matcher idx to get src decoder features
             # TODO dummy dict
             # out_dec = {'pred_logits': outputs_class[:B//2][-1], 'pred_boxes': outputs_coords[:B//2][-1]}
@@ -315,7 +324,6 @@ class DeformableDETR(nn.Module):
             # for batch_idx in range(0, B//2, 1):
             #     indices_tmp = indices[batch_idx] # tuple
             #     src_dec_features.append(hs[-1][batch_idx][indices_tmp[0]]) # get object query position only
-            #     # import pdb; pdb.set_trace()
             #     scores, _ = torch.max(outputs_class_conf[batch_idx][indices_tmp[0]], 1)
             #     src_labels.append(targets[batch_idx]['labels'].tolist()) # list
             #     src_scores.append(scores)
@@ -323,85 +331,78 @@ class DeformableDETR(nn.Module):
             # tgt_dec_features = []
             # tgt_scores = []
             # tgt_labels = []
-            # for batch_idx in range(B//2, B, 1):
+            # for batch_idx in range(B//2):
             #     # import pdb; pdb.set_trace()
-            #     keep_tmp = keep[batch_idx][:,:,0].tolist()[0] # get list of object query indices
-            #     keep_label_idx = keep[batch_idx][:,:,1].tolist()[0] # get list of object query indices
+            #     keep_tmp = keep_tgt[batch_idx][:,:,0].tolist()[0] # get list of object query indices
+            #     keep_label_idx = keep_tgt[batch_idx][:,:,1].tolist()[0] # get list of object query indices
             #     scores, _ = torch.max(outputs_class_conf[batch_idx][keep_tmp], 1)
             #     tgt_dec_features.append(hs[-1][batch_idx][keep_tmp])
             #     tgt_labels.append(keep_label_idx)
             #     tgt_scores.append(scores)
 
-            # # import pdb; pdb.set_trace()
+            # list_of_labels_dec = []
+            # list_of_rois_dec = []
+            # list_of_scores_dec = []
 
-            # list_of_labels = []
-            # list_of_rois = []
-            # list_of_scores = []
+            # for features_, scores, labels in zip(src_dec_features, src_scores, src_labels):
+            #     list_of_rois_dec.append(features_)
+            #     list_of_scores_dec.append(scores)
+            #     list_of_labels_dec.append(labels)
 
-            # for features, scores, labels in zip(src_dec_features, src_scores, src_labels):
-            #     list_of_rois.append(features)
-            #     list_of_scores.append(scores)
-            #     list_of_labels.append(labels)
+            # for features_, scores, labels in zip(tgt_dec_features, tgt_scores, tgt_labels):
+            #     list_of_rois_dec.append(features_)
+            #     list_of_scores_dec.append(scores)
+            #     list_of_labels_dec.append(labels)
 
-            # for features, scores, labels in zip(tgt_dec_features, tgt_scores, tgt_labels):
-            #     list_of_rois.append(features)
-            #     list_of_scores.append(scores)
-            #     list_of_labels.append(labels)
+            # src_prototypes_dec, tgt_prototypes_dec, alpha_values = weighted_aggregate(B, list_of_labels_dec, list_of_rois_dec, list_of_scores_dec, self.num_classes, self.hidden_dim)
 
-            # src_prototypes, tgt_prototypes = weighted_aggregate(B, list_of_labels, list_of_rois, list_of_scores, self.num_classes, self.hidden_dim)
+            # src_prototypes_dec = F.normalize(src_prototypes_dec, dim=-1)
+            # tgt_prototypes_dec = F.normalize(tgt_prototypes_dec, dim=-1)
+
+            # prototypes = torch.stack([src_prototypes_dec.unsqueeze(0), tgt_prototypes_dec.unsqueeze(0)], dim=1)
 
             ### encoder features
             # torch.Size([2, 512, 84, 167]), torch.Size([2, 1024, 42, 84]), torch.Size([2, 2048, 21, 42])
-
             feature_w = features[0].tensors.shape[-1] # w
             feature_h = features[0].tensors.shape[-2] # h
             feature_c = memory.shape[-1]
-
-            # import pdb; pdb.set_trace()
-            # memory = memory[0] # src
+ 
             memory_reshaped = memory.reshape(-1, feature_h, feature_w, feature_c).permute(0,3,1,2)
 
-            # unsorted
-            list_of_labels = [] # list(list())
-            list_of_scores = [] # list of tensors
-            rescaled_boxes = [] # list of tensors (boxes rescaled back to fit the image dim)
+            list_of_labels_enc = [] # list(list())
+            list_of_scores_enc = [] # list of tensors
+            rescaled_boxes_enc = [] # list of tensors (boxes rescaled back to fit the image dim)
 
-            source_anno_size_only = targets[:B//2]
             # keep source and target separate since it is clearner this way
             for batch_idx in range(0, B//2, 1):
+                # keep_tmp = keep_src[batch_idx][:,:,0].tolist()[0]
                 source_boxes = targets[batch_idx]['boxes']
                 source_labels = targets[batch_idx]['labels'].tolist()
                 source_scores = torch.ones(source_boxes.shape[0]).cuda()
+                # source_scores, _ = torch.max(outputs_class_conf[batch_idx][keep_tmp], dim=1)
 
                 boxes_rescaled = box_ops.box_cxcywh_to_xyxy(source_boxes) # src only, batch size = 1
                 # and from relative [0, 1] to absolute [0, height] coordinates
                 # img_sizes = torch.stack([t["size"] for t in targets], dim=0)
-                img_sizes = source_anno_size_only[batch_idx]["size"]
+                img_sizes = targets[batch_idx]["size"]
                 img_h, img_w = img_sizes.unbind(0)
                 scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=0)
                 for b in range(boxes_rescaled.shape[0]):
                     boxes_rescaled[b] *= scale_fct[0] # batch_size = 1, one image
-                rescaled_boxes.append(boxes_rescaled) # delist
-                list_of_labels.append(source_labels)
-                list_of_scores.append(source_scores)
+                rescaled_boxes_enc.append(boxes_rescaled) # delist
+                list_of_labels_enc.append(source_labels)
+                list_of_scores_enc.append(source_scores)
 
             # collect target rois (batch-wise targets)
-            # TODO get size from target anno, not cheating
-            targets_anno_size_only = targets[B//2:B]
-            assert len(targets_anno_size_only) == B//2
-
-            for batch_idx in range(B//2):
-                # import pdb; pdb.set_trace()
+            for batch_idx in range(B//2, B, 1):
                 keep_tmp = keep[batch_idx][:,:,0].tolist()[0] # get list of indices
                 keep_label_idx = keep[batch_idx][:,:,1].tolist()[0]
-                # import pdb; pdb.set_trace()
                 target_boxes = outputs_coord[-1][batch_idx][keep_tmp] # get last layer predicted boxes
-                # import pdb; pdb.set_trace()
                 # TODO rescale boxes (for batch size >1, this is to be modified)
                 boxes_rescaled = box_ops.box_cxcywh_to_xyxy(target_boxes) # src only, batch size = 1
                 # and from relative [0, 1] to absolute [0, height] coordinates
                 # not cheating
-                img_sizes = targets_anno_size_only[batch_idx]["size"]
+                img_sizes = targets[batch_idx]["size"]
 
                 # img_sizes = torch.stack([t["size"] for t in targets_anno_size_only], dim=0)
                 img_h, img_w = img_sizes.unbind(0)
@@ -409,19 +410,16 @@ class DeformableDETR(nn.Module):
                 for b in range(boxes_rescaled.shape[0]):
                     boxes_rescaled[b] *= scale_fct[0] # batch_size = 1, one image
 
-                rescaled_boxes.append(boxes_rescaled)
-                list_of_labels.append(keep_label_idx)
-
-                import pdb; pdb.set_trace()
+                rescaled_boxes_enc.append(boxes_rescaled)
+                list_of_labels_enc.append(keep_label_idx)
+                                
                 scores, _ = torch.max(outputs_class_conf[batch_idx][keep_tmp], dim=1)
-                # import pdb; pdb.set_trace()
-                list_of_scores.append(scores)
+                list_of_scores_enc.append(scores)
 
                 # for box_i in range(boxes.shape[0]):
                 #     memory --> torch.Size([1, c_dim, spatial_dim, spatial_dim])
                 #     boxes --> torch.Size([1, spatial_dim, c_dim])
 
-            # import pdb; pdb.set_trace()
             # list_of_labels
             # contains one source and one target
             # num_points = rescaled_boxes[0].shape[-1]
@@ -429,37 +427,56 @@ class DeformableDETR(nn.Module):
             # pad num
             # diff = max(rescaled_boxes[0].shape[0], rescaled_boxes[1].shape[0]) - min(rescaled_boxes[0].shape[0], rescaled_boxes[1].shape[0])
             
+            # import pdb; pdb.set_trace()
             # TODO pad proposal boxes
             # batched rois
-            list_of_rois = []
+
+            list_of_rois_enc = []
             for batch_idx in range(B):
                 # rois: torch.Size([31, 256])
-                rois = torchvision.ops.roi_align(memory_reshaped[batch_idx].unsqueeze(0), [rescaled_boxes[batch_idx]], output_size=(7, 7), spatial_scale=1/32.0, aligned=True).mean(3).mean(2)
-                list_of_rois.append(rois)
+                rois = torchvision.ops.roi_align(memory_reshaped[batch_idx].unsqueeze(0), [rescaled_boxes_enc[batch_idx]], output_size=(7, 7), spatial_scale=1/32.0, aligned=True).mean(3).mean(2)
+                list_of_rois_enc.append(rois)
 
+            # import pdb; pdb.set_trace()
+            # src_prototypes_enc, _ = weighted_aggregate_tmp(B, list_of_labels_enc[:B//2], list_of_rois_enc[:B//2], list_of_scores_enc[:B//2], self.num_classes, self.hidden_dim)
+            # tgt_prototypes_enc, _ = weighted_aggregate_tmp(B, list_of_labels_enc[B//2:], list_of_rois_enc[B//2:], list_of_scores_enc[B//2:], self.num_classes, self.hidden_dim)
+            
             ## weighted aggregate
-            src_prototypes, tgt_prototypes = weighted_aggregate(B, list_of_labels, list_of_rois, list_of_scores, self.num_classes, self.hidden_dim)
+            src_prototypes_enc, tgt_prototypes_enc, alpha_values = weighted_aggregate(B, list_of_labels_enc, list_of_rois_enc, list_of_scores_enc, self.num_classes, self.hidden_dim)
+            
+            src_prototypes_enc = F.normalize(src_prototypes_enc, dim=-1)
+            tgt_prototypes_enc = F.normalize(tgt_prototypes_enc, dim=-1)
+            
+            
+            # unsqueeze for the sake of input dim to memory
+            src_prototypes_enc = src_prototypes_enc.mean(0)
+            tgt_prototypes_enc = tgt_prototypes_enc.mean(0)
 
+            prototypes = torch.stack([src_prototypes_enc, tgt_prototypes_enc], dim=0)
+            
 
             if self.ema:
-                #memory monitoring
-                # tracemalloc.start()
-                updated_src_prototypes, updated_tgt_prototypes = self.memory(src_prototypes, tgt_prototypes)
+                new_memory = self.memory(self.m_items, prototypes)
+                self.m_items = new_memory
+                updated_class_prototypes = new_memory
 
-                # print(tracemalloc.get_traced_memory())
-                # # peak memory
-                # if tracemalloc.get_traced_memory()[1] > 5000000000:
-                #     quit()
-
+                # breakpoint()
+                updated_src_prototypes_enc = updated_class_prototypes[0,:,:]
+                updated_tgt_prototypes_enc = updated_class_prototypes[1,:,:]
+                # updated_src_prototypes_dec = updated_class_prototypes[:,:B//2,:,:]
+                # updated_tgt_prototypes_dec = updated_class_prototypes[:,B//2:,:,:]
+            
             else:
-                updated_src_prototypes = src_prototypes
-                updated_tgt_prototypes = tgt_prototypes
-
+                updated_src_prototypes_enc = src_prototypes_enc
+                updated_tgt_prototypes_enc = tgt_prototypes_enc
+                # updated_src_prototypes_dec = src_prototypes_dec
+                # updated_tgt_prototypes_dec = tgt_prototypes_dec
 
         if self.training and self.uda:
             B = outputs_class.shape[1]
             outputs_class = outputs_class[:, :B//2] # only source data has labels, so we index the first one
             outputs_coord = outputs_coord[:, :B//2]
+
             if self.two_stage:
                 enc_outputs_class = enc_outputs_class[:B//2]
                 enc_outputs_coord_unact = enc_outputs_coord_unact[:B//2]
@@ -477,17 +494,23 @@ class DeformableDETR(nn.Module):
                 da_output['channel_query'] = self.channel_D(da_output['channel_query'])
             if self.instance_align:
                 da_output['instance_query'] = self.instance_D(da_output['instance_query'])
+
+        # TODO check for nans
+        if torch.isnan(sum(sum(sum(outputs_class[-1])))):
+            import pdb; pdb.set_trace()
         
-        # import pdb; pdb.set_trace()
-        # store predictions in dictionary
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
 
 
         # TODO add prototypes to outputs
         if self.training:
             # out['prototypes'] = {'src_prototypes': src_prototypes, 'tgt_prototypes': tgt_prototypes}
-            # TODO: ema update
-            out['prototypes'] = {'src_prototypes': updated_src_prototypes, 'tgt_prototypes': updated_tgt_prototypes}
+            alpha_values = None
+            out['prototypes_enc'] = {'src_prototypes_enc': updated_src_prototypes_enc, 'tgt_prototypes_enc': updated_tgt_prototypes_enc, 'alpha_values': alpha_values}
+            # out['prototypes_dec'] = {'src_prototypes_dec': updated_src_prototypes_dec, 'tgt_prototypes_dec': updated_tgt_prototypes_dec, 'alpha_values': alpha_values}
+
+            if len(thresh_tmp_list) > 0:
+                out['thresh_change_occurence'] = thresh_tmp_list
 
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
@@ -499,6 +522,7 @@ class DeformableDETR(nn.Module):
         # discriminator outputs
         if self.training and self.uda:
             out['da_output'] = da_output
+            out['thresh'] = thresh
 
         # TODO to store things for feat aug
         if self.feat_aug:
@@ -514,7 +538,8 @@ class DeformableDETR(nn.Module):
             out['covariance_target'] = compute_CV(target_features, target_labels, target_mean, self.num_classes)
 
         if self.debug:
-            return out, features, memory, hs
+            # import pdb; pdb.set_trace()
+            return out, features, memory, hs, rescaled_boxes_enc, list_of_labels_enc, list_of_scores_enc
         else:
             return out
     
@@ -697,8 +722,6 @@ class SetCriterion(nn.Module):
 
         idx = self._get_src_permutation_idx(indices) # (tensor([0, 0]), tensor([175, 186]))
 
-        # import pdb; pdb.set_trace()
-
         target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)]) # e.g tensor([3, 3])
 
         # TODO for single class, need to convert target_classes_o to ones since the target_classes_o
@@ -712,6 +735,7 @@ class SetCriterion(nn.Module):
 
         target_classes[idx] = target_classes_o # fill with true labels
 
+        # import pdb; pdb.set_trace()
         # (1, 300, 10)
         target_classes_onehot = torch.zeros([src_logits.shape[0], src_logits.shape[1], src_logits.shape[2] + 1],
                                             dtype=src_logits.dtype, layout=src_logits.layout, device=src_logits.device)
@@ -746,7 +770,8 @@ class SetCriterion(nn.Module):
         # set background index to 0
         target_classes = torch.full(src_logits.shape[:2], 0,
                                     dtype=torch.int64, device=src_logits.device)
-
+        
+        # idx is used for 
         target_classes[idx] = target_classes_o
 
         # import pdb; pdb.set_trace()
@@ -828,6 +853,7 @@ class SetCriterion(nn.Module):
 
     # TODO: entropy minimization for target only
     def loss_entropy(self, outputs, targets, indices, num_boxes):
+
         raise NotImplementedError
 
     def loss_da(self, outputs, use_focal=False):
@@ -872,81 +898,133 @@ class SetCriterion(nn.Module):
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
 
-    # for contrastive loss
+    # L2 loss
     def distance(self, src_feat, tgt_feat):
         output = torch.pow(src_feat - tgt_feat, 2.0).mean()
         return output
     
     # TODO in this implementation, the intra class loss between samples is not considered
-    def contrastive_loss(self, source, target, margin=1):
-        # source and target are tensors
+    def contrastive_loss(self, source, target, alpha_values, margin=1):
 
-        # intra class: only between source and target
-        # inter class: between each class --> three combinations
-        # max length is self.num_classes
-        # source = source.view(-1, source.shape[2])
-        # target = target.view(-1, target.shape[2])
+        intra_loss = 0.
+        inter_loss = 0.
 
-        # intra_loss = torch.as_tensor([0]).cuda()
-        # inter_loss = torch.as_tensor([0]).cuda()
+        # for b_i in range(source.shape[1]):
+        #     source_tmp = source[b_i]
+        #     target_tmp = target[b_i]
 
-        intra_loss = 0
-        inter_loss = 0
-
-        # import pdb; pdb.set_trace()
-        for cls_idx in range(self.num_classes):
+        for cls_idx in range(self.num_classes-1):
             # i gives a fixed class
             tmp_src_feat_1 = source[cls_idx, :] # per class prototype
             tmp_tgt_feat_1 = target[cls_idx, :] # per class prototype
             
-            if torch.abs(tmp_src_feat_1.sum())<1e-5 or torch.abs(tmp_src_feat_1.sum())<1e-5:
-                continue
-
             # intra
+            # intra_loss = intra_loss + torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_1))
             intra_loss = intra_loss + self.distance(tmp_src_feat_1, tmp_tgt_feat_1)
 
             # inter takes into account the current and all other classes
-            for cls_idx_next in range(cls_idx+1, self.num_classes):
+            for cls_idx_next in range(cls_idx+1, self.num_classes-1):
+                # next class features
                 tmp_src_feat_2 = source[cls_idx_next, :]
                 tmp_tgt_feat_2 = target[cls_idx_next, :]
 
-                # import pdb; pdb.set_trace()
-                inter_loss = inter_loss + torch.pow(
+                ### original implementation
+                inter_loss =  inter_loss + torch.pow(
                     (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin,
                     2) * torch.pow(
                     torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2)),
                               torch.tensor(0).float().cuda()), 2.0)
 
-                inter_loss = inter_loss + torch.pow(
+                inter_loss =  inter_loss + torch.pow(
                     (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))) / margin,
                     2) * torch.pow(
                     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),
                               torch.tensor(0).float().cuda()), 2.0)
 
-                inter_loss = inter_loss + torch.pow(
+                inter_loss =  inter_loss + torch.pow(
                     (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2))) / margin,
                     2) * torch.pow(
                     torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),
                               torch.tensor(0).float().cuda()), 2.0)
 
-                inter_loss = inter_loss + torch.pow(
+                inter_loss =  inter_loss + torch.pow(
                     (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2))) / margin,
                     2) * torch.pow(
                     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
                               torch.tensor(0).float().cuda()), 2.0)
 
-            # import pdb; pdb.set_trace()
-        # import pdb; pdb.set_trace()
+                # import pdb; pdb.set_trace()
+                # inter_loss = inter_loss + alpha_values[0][cls_idx] * alpha_values[1][cls_idx] * torch.pow(
+                #     (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin,
+                #     2) * torch.pow(
+                #     torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2)),
+                #               torch.tensor(0).float().cuda()), 2.0)
 
+                # inter_loss = inter_loss + alpha_values[0][cls_idx] * alpha_values[1][cls_idx] * torch.pow(
+                #     (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))) / margin,
+                #     2) * torch.pow(
+                #     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),
+                #               torch.tensor(0).float().cuda()), 2.0)
+
+                # inter_loss = inter_loss + alpha_values[0][cls_idx] * alpha_values[1][cls_idx] * torch.pow(
+                #     (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2))) / margin,
+                #     2) * torch.pow(
+                #     torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),
+                #               torch.tensor(0).float().cuda()), 2.0)
+
+                # inter_loss = inter_loss + alpha_values[0][cls_idx] * alpha_values[1][cls_idx] * torch.pow(
+                #     (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2))) / margin,
+                #     2) * torch.pow(
+                #     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
+                #               torch.tensor(0).float().cuda()), 2.0)
+
+                # eps = 1e-5 # prevent gradient of sqrt at 0
+
+                # inter_loss =  inter_loss + ((margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2))+eps) / margin) * torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2)),
+                #                 torch.tensor(0).float().cuda())
+
+                # inter_loss =  inter_loss + ((margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))+eps) / margin) * torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),
+                #                 torch.tensor(0).float().cuda())
+
+                # inter_loss =  inter_loss + ((margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2))+eps) / margin) * torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),
+                #                 torch.tensor(0).float().cuda())
+
+                # inter_loss =  inter_loss + ((margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2))+eps) / margin) * torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
+                #                 torch.tensor(0).float().cuda())
+
+
+                ### testing
+                # inter_loss =  inter_loss + torch.pow(
+                #     (margin - (self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin,
+                #     2) * torch.pow(
+                #     torch.max(margin - (self.distance(tmp_src_feat_1, tmp_src_feat_2)),
+                #             torch.tensor(0).float().cuda()), 2.0)
+
+                # inter_loss =  inter_loss + torch.pow(
+                #     (margin - (self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))) / margin,
+                #     2) * torch.pow(
+                #     torch.max(margin - (self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),
+                #             torch.tensor(0).float().cuda()), 2.0)
+
+                # inter_loss =  inter_loss + torch.pow(
+                #     (margin - (self.distance(tmp_src_feat_1, tmp_tgt_feat_2))) / margin,
+                #     2) * torch.pow(
+                #     torch.max(margin - (self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),
+                #             torch.tensor(0).float().cuda()), 2.0)
+
+                # inter_loss =  inter_loss + torch.pow(
+                #     (margin - (self.distance(tmp_tgt_feat_1, tmp_src_feat_2))) / margin,
+                #     2) * torch.pow(
+                #     torch.max(margin - (self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
+                #             torch.tensor(0).float().cuda()), 2.0)
+
+                
+        # import pdb; pdb.set_trace()
         # average over all classes*batch_dim 
         intra_loss = intra_loss / source.shape[0]
 
         # combinations between each class for two domains
         inter_loss = inter_loss / (source.shape[0] * (source.shape[0] - 1) * 2) # at the of the iteration the there will be one "next class" being left off
-
-        # import pdb; pdb.set_trace()
-        # print(intra_loss)
-        # print(inter_loss)
 
         if not torch.is_tensor(intra_loss):
             intra_loss = torch.as_tensor(intra_loss)
@@ -954,11 +1032,12 @@ class SetCriterion(nn.Module):
         if not torch.is_tensor(inter_loss):
             inter_loss = torch.as_tensor(inter_loss)
 
-        # print(type(intra_loss))
-        # print(type(inter_loss))
-
         # if isinstance(intra_loss, float) or isinstance(inter_loss, float):
         #     import pdb; pdb.set_trace()
+
+        # TODO testing
+        # inter_loss = torch.tensor(0.)
+        # intra_loss = torch.tensor(0.)
 
         return intra_loss.cuda(), inter_loss.cuda()
 
@@ -970,12 +1049,14 @@ class SetCriterion(nn.Module):
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
 
+
+        # import pdb; pdb.set_trace()
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
         
 
         # TODO we only want to load source targets
         if mode == 'train':
-            targets = targets[:len(targets)//2]
+            targets = targets[:len(targets)//2] # use src only
         elif mode == 'test':
             pass
         else:
@@ -1013,8 +1094,9 @@ class SetCriterion(nn.Module):
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
                     l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
-
+        
         if 'enc_outputs' in outputs:
+            import pdb; pdb.set_trace()
             enc_outputs = outputs['enc_outputs']
             bin_targets = copy.deepcopy(targets)
             for bt in bin_targets:
@@ -1036,16 +1118,28 @@ class SetCriterion(nn.Module):
             for k, v in outputs['da_output'].items():
                 losses[f'loss_{k}'] = self.loss_da(v, use_focal='query' in k)
 
-        if 'prototypes' in outputs:
+        if 'prototypes_enc' in outputs:
             # source and target are lists of class prototypes
-            source = outputs['prototypes']['src_prototypes']
-            target = outputs['prototypes']['tgt_prototypes']
-            # import pdb; pdb.set_trace()
+            source_enc = outputs['prototypes_enc']['src_prototypes_enc']
+            target_enc = outputs['prototypes_enc']['tgt_prototypes_enc']
+            alpha_values = outputs['prototypes_enc']['alpha_values']
             
-            intra_loss, inter_loss = self.contrastive_loss(source, target, margin = self.margin)
+            intra_loss_enc, inter_loss_enc = self.contrastive_loss(source_enc, target_enc, alpha_values, margin = self.margin)
+        
             # import pdb; pdb.set_trace()
-            losses[f'loss_intra'] = intra_loss
-            losses[f'inter_loss'] = inter_loss
+            losses['loss_intra_class_enc'] = intra_loss_enc
+            losses['loss_inter_class_enc'] = inter_loss_enc
+
+        if 'prototypes_dec' in outputs:
+            # source and target are lists of class prototypes
+            source_dec = outputs['prototypes_dec']['src_prototypes_dec']
+            target_dec = outputs['prototypes_dec']['tgt_prototypes_dec']
+            alpha_values = outputs['prototypes_dec']['alpha_values']
+            
+            intra_loss_dec, inter_loss_dec = self.contrastive_loss(source_dec, target_dec, alpha_values, margin = self.margin)
+
+            losses['loss_intra_class_dec'] = intra_loss_dec
+            losses['loss_inter_class_dec'] = inter_loss_dec
 
         # TODO aug loss here is used in place of ce loss computed here
         if self.feat_aug:
@@ -1076,6 +1170,7 @@ class PostProcess(nn.Module):
         """
         out_logits, out_bbox = outputs['pred_logits'], outputs['pred_boxes']
 
+        # import pdb; pdb.set_trace()
         assert len(out_logits) == len(target_sizes)
         assert target_sizes.shape[1] == 2
 
@@ -1110,10 +1205,11 @@ class PostProcess_for_target(nn.Module):
                           For visualization, this should be the image size after data augment, but before padding
         """
         out_bbox = outputs['boxes']
-
+        # import pdb; pdb.set_trace()
         # assert len(out_logits) == len(target_sizes)
         assert target_sizes.shape[1] == 2
 
+        # import pdb; pdb.set_trace()
         # prob = out_logits.sigmoid()
         # topk_values, topk_indexes = torch.topk(prob.view(out_logits.shape[0], -1), 100, dim=1)
         # scores = topk_values
@@ -1200,8 +1296,10 @@ def build(cfg):
     weight_dict['loss_space_query'] = cfg.LOSS.SPACE_QUERY_LOSS_COEF
     weight_dict['loss_channel_query'] = cfg.LOSS.CHANNEL_QUERY_LOSS_COEF
     weight_dict['loss_instance_query'] = cfg.LOSS.INSTANCE_QUERY_LOSS_COEF
-    weight_dict['loss_inter_class'] = cfg.LOSS.INTER_CLASS_COEF
-    weight_dict['loss_intra_class'] = cfg.LOSS.INTRA_CLASS_COEF
+    weight_dict['loss_inter_class_enc'] = cfg.LOSS.INTER_CLASS_COEF
+    weight_dict['loss_intra_class_enc'] = cfg.LOSS.INTRA_CLASS_COEF
+    # weight_dict['loss_inter_class_dec'] = cfg.LOSS.INTER_CLASS_COEF
+    # weight_dict['loss_intra_class_dec'] = cfg.LOSS.INTRA_CLASS_COEF
 
     # put ce/aug loss at the end due to order of compute
     # weight_dict['loss_aug'] = cfg.LOSS.AUG_LOSS_COEF
