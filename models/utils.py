@@ -37,7 +37,7 @@ class FCDiscriminator(nn.Module):
         #self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
         x = self.conv1(x)
         x = self.leaky_relu(x)
         x = self.conv2(x)
@@ -54,20 +54,21 @@ class FCDiscriminator(nn.Module):
         return x
 
 # NOTE checked
-def weighted_aggregate_tmp(batch_d, list_of_labels, list_of_rois, list_of_scores, num_classes, hidden_dim):
+def weighted_aggregate_tmp(batch_d, list_of_labels, list_of_rois, list_of_scores, src_prototypes,
+                            num_classes, hidden_dim):
     
     """
-    list_of_rois: dim 
+    weighted aggregation for rois of each domain: weight --> group rois --> aggregate
     """
 
-    B = batch_d//2 # single domain
+    B = batch_d//2
 
     source_labels = []
     weighted_rois_source = []
 
+    ### weight rois with the prediction scores
     for i in range(B):
         label_set = list(set(list_of_labels[i])) # label set for each sample 
-        # this is only valid as starting index is 0
         source_labels.append(label_set)
 
         # confidence guided merging
@@ -97,18 +98,17 @@ def weighted_aggregate_tmp(batch_d, list_of_labels, list_of_rois, list_of_scores
 
         source_rois.append(tmp)
 
-    # aggregate rois for each class
-    src_prototypes = torch.zeros((num_classes-1, hidden_dim)).cuda()
+    prototypes = torch.zeros((num_classes-1, hidden_dim)).cuda()
     epsilon = 1e-6
 
-    # i batch
+    ### aggregate rois for each class
     for i in range(len(source_rois)):
         roi_sample_tmp = source_rois[i] # some rois for a single class
         # j label
         for j in range(len(roi_sample_tmp)):
             aggregate = torch.sum(roi_sample_tmp[j], dim=0)/(torch.sum(list_of_scores[0]) + epsilon)
             # store prototype at the corresponding cls index position
-            src_prototypes[source_labels[i][j]-1] = aggregate
+            prototypes[source_labels[i][j]-1] = aggregate
 
     # class reweighting factor
     alpha_values_src = torch.ones((num_classes))
@@ -126,7 +126,7 @@ def weighted_aggregate_tmp(batch_d, list_of_labels, list_of_rois, list_of_scores
 
     alphas = alpha_values_src
 
-    return src_prototypes, alphas
+    return prototypes, alphas
 
 def weighted_aggregate(batch_d, list_of_labels, list_of_rois, list_of_scores, num_classes, hidden_dim):
     """
