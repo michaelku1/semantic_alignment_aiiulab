@@ -11,11 +11,15 @@
 
 # from .deformable_detr import build
 
-from .deformable_detr_contrastive import build
+# from .deformable_detr_contrastive_bak import build
 
-def build_model(cfg):
-    return build(cfg)
+# from .deformable_detr_contrastive import build
 
+# from .deformable_detr_contrastive_cross_scale import build
+
+from .deformable_detr_contrastive_tgt_proposal_reweight import build
+
+# from .deformable_detr_contrastive_tgt_proposal_reweight_debug import build
 
 def build_model(cfg):
     return build(cfg)
