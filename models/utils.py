@@ -23,17 +23,22 @@ def remove_mask_and_warp(src, pos, padding_mask, level_start_index, spatial_shap
         dimension, respectively.
     """
 
+    # src: (N, H_0W_0+...H_3W_3, C)
+    # pos: (N, H_0W_0+...H_3W_3, C)
+    # level_start_index = tensor([0, H_0W_0=14028, H_0W_0+H_1W_1=17556, H_0W_0+H_1W_1+H_2W_2=18438])
+    # spatial_shapes: (#lvl, 2)
+
     B, _, C = src.shape
     sqrt_C = int(C ** 0.5)
     src_warped = []
     pos_warped = []
     for start, shape in zip(level_start_index, spatial_shapes):
         H, W = shape
-        s = src[:, start:start+H*W].view(B, H, W, C).permute(0, 3, 1, 2)
-        p = pos[:, start:start+H*W].view(B, H, W, C).permute(0, 3, 1, 2)
-        m = padding_mask[:, start:start+H*W].view(B, H, W)
+        s = src[:, start:start+H*W].view(B, H, W, C).permute(0, 3, 1, 2)  # (B, C, H, W)
+        p = pos[:, start:start+H*W].view(B, H, W, C).permute(0, 3, 1, 2)  # (B, C, H, W)
+        m = padding_mask[:, start:start+H*W].view(B, H, W)  # (B, H, W)
 
-        not_m = ~m
+        not_m = ~m｀
         real_H = not_m.sum(1).max(1).values
         real_W = not_m.sum(2).max(1).values
 
@@ -76,17 +81,22 @@ class DomainAttention(nn.Module):
             src, pos (batch_size, sequence_length, d_model): patch tokens and position encodings
             padding_mask (batch_size, sequence_length): key padding mask
         """
+        # query: (N, 1, d_model)
+        # src: (N, H_0W_0+...H_3W_3, C)
+        # pos: (N, H_0W_0+...H_3W_3, C)
+        # padding_mask: (N, H_0W_0+...H_3W_3)
+
         r_query, _ = self.cross_attn(
-            query=query.transpose(0, 1),
-            key=self.grl(self.with_pos_embed(src, pos)).transpose(0, 1),
-            value=self.grl(src).transpose(0, 1),
-            key_padding_mask=padding_mask,
+            query=query.transpose(0, 1),  # (1, N, d_model)
+            key=self.grl(self.with_pos_embed(src, pos)).transpose(0, 1),  # (H_0W_0+...H_3W_3, N, C)
+            value=self.grl(src).transpose(0, 1),  # (H_0W_0+...H_3W_3, N, C)
+            key_padding_mask=padding_mask,  # do not pay attention on the keys that the corresponding mask is `True`
         )
         query = query + self.dropout1(r_query.transpose(0, 1))
         query = self.norm1(query)
         query = query + self.dropout2(self.linear(query))
         query = self.norm2(query)
-        return query
+        return query  # (N, 1, d_model)
 
 
 # ------------------------------------------------------------------------------------------------------------------------------

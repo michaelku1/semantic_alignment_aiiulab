@@ -85,12 +85,12 @@ class BackboneBase(nn.Module):
         self.body = IntermediateLayerGetter(backbone, return_layers=return_layers)
 
     def forward(self, tensor_list: NestedTensor):
-        xs = self.body(tensor_list.tensors)
-        out: Dict[str, NestedTensor] = {}
+        xs = self.body(tensor_list.tensors)  # {'0': feat_0, '1': feat_1, '2': feat_2}
+        out: Dict[str, NestedTensor] = {}  # {'0': nested_tensor_0, '1': nested_tensor_1, '2': nested_tensor_2}
         for name, x in xs.items():
             m = tensor_list.mask
             assert m is not None
-            mask = F.interpolate(m[None].float(), size=x.shape[-2:]).to(torch.bool)[0]
+            mask = F.interpolate(m[None].float(), size=x.shape[-2:]).to(torch.bool)[0]  # downsample masks
             out[name] = NestedTensor(x, mask)
         return out
 
@@ -118,9 +118,9 @@ class Joiner(nn.Sequential):
         self.num_channels = backbone.num_channels
 
     def forward(self, tensor_list: NestedTensor):
-        xs = self[0](tensor_list)
-        out: List[NestedTensor] = []
-        pos = []
+        xs = self[0](tensor_list)  # {'0': nested_tensor_0, '1': nested_tensor_1, '2': nested_tensor_2}
+        out: List[NestedTensor] = []  # [nested_tensor_0, nested_tensor_1, nested_tensor_2]
+        pos = []  # [pos_emb_tensor_0, pos_emb_tensor_1, pos_emb_tensor_2]
         for name, x in sorted(xs.items()):
             out.append(x)
 

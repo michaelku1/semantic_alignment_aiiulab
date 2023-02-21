@@ -56,9 +56,9 @@ class DeformableDETR(nn.Module):
         super().__init__()
         self.num_queries = num_queries #300
         self.transformer = transformer
-        hidden_dim = transformer.d_model #256
+        hidden_dim = transformer.d_model  # 256
         self.class_embed = nn.Linear(hidden_dim, num_classes)
-        self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)  #output_dim = 4
+        self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)  # output_dim = 4, #layer = 3
         self.num_feature_levels = num_feature_levels
         if not two_stage:
             self.query_embed = nn.Embedding(num_queries, hidden_dim*2)
@@ -105,9 +105,9 @@ class DeformableDETR(nn.Module):
 
         # if two-stage, the last class_embed and bbox_embed is for region proposal generation
         num_pred = (transformer.decoder.num_layers + 1) if two_stage else transformer.decoder.num_layers
-        if with_box_refine:
-            self.class_embed = _get_clones(self.class_embed, num_pred)
-            self.bbox_embed = _get_clones(self.bbox_embed, num_pred)
+        if with_box_refine:  # True from cfg
+            self.class_embed = _get_clones(self.class_embed, num_pred)  # ModuleList[Linear] * 6
+            self.bbox_embed = _get_clones(self.bbox_embed, num_pred)  # ModuleList[Linear] * 6
             nn.init.constant_(self.bbox_embed[0].layers[-1].bias.data[2:], -2.0)
             # hack implementation for iterative bounding box refinement
             self.transformer.decoder.bbox_embed = self.bbox_embed
@@ -158,34 +158,29 @@ class DeformableDETR(nn.Module):
                - "aux_outputs": Optional, only returned when auxilary losses are activated. It is a list of
                                 dictionnaries containing the two above keys for each decoder layer.
         """
-        #samples.tensors=[2,3,666,1332]
-        #samples.mask=[2,666,1332]
         if not isinstance(samples, NestedTensor):
             samples = nested_tensor_from_tensor_list(samples)
+        # samples.tensors: (N, C, H, W)
+        # samples.mask: (N ,H, W)
         
-        features, pos = self.backbone(samples)  # features size are different (use mask to resize to same size)
-        # features[0].tensors.shape=[2,  512, 84, 167]
-        # features[1].tensors.shape=[2, 1024, 42, 84]
-        # features[2].tensors.shape=[2, 2048, 21, 42]
-        # pos[0].shape=[2, 256, 84, 167]
-        # pos[1].shape=[2, 256, 42, 84]
-        # pos[2].shape=[2, 256, 21, 42]
+        features, pos = self.backbone(samples)  # features size are different
+        # features: [nested_tensor_0, nested_tensor_1, nested_tensor_2]
+        #     features[0].tensors: (2,  512, 84, 167)
+        #     features[1].tensors: (2, 1024, 42,  84)
+        #     features[2].tensors: (2, 2048, 21,  42)
+        # pos: [pos_emb_tensor_0, pos_emb_tensor_1, pos_emb_tensor_2]
+        #     pos[0]: (2, 256, 84, 167)
+        #     pos[1]: (2, 256, 42,  84)
+        #     pos[2]: (2, 256, 21,  42)
 
         srcs = []
         masks = []
-
-        # different layer features
-        for l, feat in enumerate(features):
+        for l, feat in enumerate(features):  # different layer features
             src, mask = feat.decompose()
-            # src=[2,512,84,167] [2,1024,42,84] [2,2048,42,84]
-            # mask=[2,84,167] [2,42,84] [2,21,42]
-
-            srcs.append(self.input_proj[l](src))
-            # feat after linear_proj (channel --> 256)
-            # srcs[0]=[2,256,84,167]
-            # srcs[1]=[2,256,42,84]
-            # srcs[2]=[2,256,21,42]
-
+            srcs.append(self.input_proj[l](src))  # feat after linear_proj (channel → 256)
+            # srcs[0]: (2, 256, 84, 167)
+            # srcs[1]: (2, 256, 42,  84)
+            # srcs[2]: (2, 256, 21,  42)
             masks.append(mask)
             assert mask is not None
 
@@ -199,31 +194,37 @@ class DeformableDETR(nn.Module):
                 m = samples.mask
                 mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
 
-                pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)  # src --> input_img  mask --> mask
+                pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
 
                 srcs.append(src)
-                # srcs[0]=[2,256,84,167]
-                # srcs[1]=[2,256,42,84]
-                # srcs[2]=[2,256,21,42]
-                # srcs[3]=[2,256,11,21]
+                # srcs[0]: (2, 256, 84, 167)
+                # srcs[1]: (2, 256, 42,  84)
+                # srcs[2]: (2, 256, 21,  42)
+                # srcs[3]: (2, 256, 11,  21)
                 masks.append(mask)
-                # masks[0]=[2,84,167]
-                # masks[1]=[2,42,84]
-                # masks[2]=[2,21,42]
-                # masks[3]=[2,11,21]
+                # masks[0]: (2, 84, 167)
+                # masks[1]: (2, 42,  84)
+                # masks[2]: (2, 21,  42)
+                # masks[3]: (2, 11,  21)
                 pos.append(pos_l)
-                # pos[0]=[2,256,84,167]
-                # pos[1]=[2,256,42,84]
-                # pos[2]=[2,256,21,42]
-                # pos[3]=[2,256,11,21]
+                # pos[0]: (2, 256, 84, 167)
+                # pos[1]: (2, 256, 42,  84)
+                # pos[2]: (2, 256, 21,  42)
+                # pos[3]: (2, 256, 11,  21)
 
         query_embeds = None
         if not self.two_stage:
             query_embeds = self.query_embed.weight  # (300, 512)
 
         hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output = self.transformer(srcs, masks, pos, query_embeds)
-        # hs = output of decoder
-        # da_output = dictionary(all query tokens:space, channel, instance)
+        # hs: (#decoder_layer, N, #query, d_model), object query tensor outputed from decoder
+        # init_reference: (N, #query, 2), initially predicted reference point coordinates by the small network `DeformableTransformer.reference_points`
+        # inter_references: (#decoder_layer, N, #query, 4), predicted box coordinates from decoder
+        # da_output: {
+        #     'space_query': (N, #encoder_layers, d_model),
+        #     'channel_query': (?, #encoder_layers, d_model),
+        #     'instance_query': (N, 1, d_model)
+        # }
 
         outputs_classes = []
         outputs_coords = []
@@ -258,13 +259,15 @@ class DeformableDETR(nn.Module):
                 enc_outputs_class = enc_outputs_class[:B//2]
                 enc_outputs_coord_unact = enc_outputs_coord_unact[:B//2]
             if self.backbone_align:
-                da_output['backbone'] = torch.cat([self.backbone_D(self.grl(src.flatten(2).transpose(1, 2))) for src in srcs], dim=1) #src = sorce_img
+                da_output['backbone'] = torch.cat([self.backbone_D(self.grl(src.flatten(2).transpose(1, 2))) for src in srcs], dim=1)
             if self.space_align:
-                da_output['space_query'] = self.space_D(da_output['space_query'])  # discriminator
+                da_output['space_query'] = self.space_D(da_output['space_query'])  # (N, #encoder_layers, 1)
             if self.channel_align:
-                da_output['channel_query'] = self.channel_D(da_output['channel_query'])  # discriminator
+                da_output['channel_query'] = self.channel_D(da_output['channel_query'])  # (?, #encoder_layers, 1)
             if self.instance_align:
-                da_output['instance_query'] = self.instance_D(da_output['instance_query'])  # discriminator
+                da_output['instance_query'] = self.instance_D(da_output['instance_query'])  # (N, 1, 1)
+
+            import pdb; pdb.set_trace()
 
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
         if self.aux_loss:
@@ -287,7 +290,8 @@ class DeformableDETR(nn.Module):
         return [{'pred_logits': a, 'pred_boxes': b}
                 for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
 
-# define new loss function
+
+# define new loss function here
 class SetCriterion(nn.Module):
     """ This class computes the loss for DETR.
     The process happens in two steps:
@@ -578,23 +582,6 @@ class MLP(nn.Module):
         x = torch.utils.checkpoint.checkpoint(mlp, x)
         return x
 
-
-'''
-class MLP(nn.Module):
-    """ Very simple multi-layer perceptron (also called FFN)"""
-
-    def __init__(self, input_dim, hidden_dim, output_dim, num_layers):
-
-        super().__init__()
-        self.num_layers = num_layers
-        h = [hidden_dim] * (num_layers - 1)
-        self.layers = nn.ModuleList(nn.Linear(n, k) for n, k in zip([input_dim] + h, h + [output_dim]))
-
-    def forward(self, x):
-        for i, layer in enumerate(self.layers):
-            x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
-        return x
-'''
 
 def build(cfg):
     device = torch.device(cfg.DEVICE)
