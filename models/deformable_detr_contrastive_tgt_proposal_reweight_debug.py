@@ -12,6 +12,8 @@
 """
 Deformable DETR model and criterion classes.
 """
+from builtins import AssertionError
+import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -22,7 +24,7 @@ import gc
 
 import torchvision
 
-from util import box_ops
+from util import box_ops, plot_utils
 from util.misc import (NestedTensor, nested_tensor_from_tensor_list,
                        accuracy, get_world_size, interpolate,
                        is_dist_avail_and_initialized, inverse_sigmoid)
@@ -33,10 +35,12 @@ from .matcher import build_matcher
 from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
 from .deformable_transformer_contrastive import build_deforamble_transformer
-from .utils import GradientReversal
+from .utils import GradientReversal, FCDiscriminator, CrossAttention_agg_prototypes, CrossAttention_agg_encoder
 import copy
 from .memory_ema import Memory
-from .utils import compute_CV, weighted_aggregate, weighted_aggregate_tmp
+from .utils import compute_CV, weighted_aggregate, weighted_aggregate_tmp, find_thresh
+
+from .debug_tools import *
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
@@ -59,26 +63,29 @@ class DeformableDETR(nn.Module):
             two_stage: two-stage Deformable DETR
         """
         super().__init__()
-        keep_rate = 0.999
+        keep_rate = 0.996
         # TODO: returns updated prototypes
         if ema:
             self.memory = Memory(num_classes, transformer.d_model, keep_rate = keep_rate, num_feature_levels=num_feature_levels)
 
-        # self.m_items = torch.zeros((2, num_classes-1, transformer.d_model)).cuda()
-
-        # initialise memory items with small values since we want to fill missing source/target current prototypes
-        self.m_items = torch.full((2, num_classes-1, transformer.d_model), 1e-6).cuda()
-
-
+        self.cos = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
+        # self.classifier_prototypes = FCDiscriminator(num_classes, transformer.d_model)
+        # self.level_embed = nn.Parameter(torch.Tensor(num_feature_levels, transformer.d_model))
+        # self.cross_attn_enc = CrossAttention_agg_prototypes(transformer.d_model, transformer.nhead, 0.1)
+        # self.cross_attn_dec = CrossAttention_agg_prototypes(transformer.d_model, transformer.nhead, 0.1)
+        # self.cross_attn = CrossAttention_agg_encoder(transformer.d_model, transformer.nhead, 0.1)
         self.ema = ema
+        # self.m_items = torch.full((2, num_classes-1, transformer.d_model), 1e-6).cuda()
+        self.m_items = torch.full((2,4, num_classes-1, transformer.d_model), 1e-6).cuda()
+        
         self.num_queries = num_queries
         self.transformer = transformer
         hidden_dim = transformer.d_model
         self.hidden_dim = hidden_dim
-        self.matcher = HungarianMatcher(cost_class = 2.0, cost_bbox = 5.0, cost_giou = 2.0)
+        # self.matcher = HungarianMatcher(cost_class = 2.0, cost_bbox = 5.0, cost_giou = 2.0)
         # import pdb; pdb.set_trace()
         self.num_classes = num_classes
-
+        # shared linear layer for the classification head
         self.class_embed = nn.Linear(hidden_dim, num_classes) # class embeddings
         self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3) # bbox embeddings
         self.num_feature_levels = num_feature_levels
@@ -129,7 +136,7 @@ class DeformableDETR(nn.Module):
             nn.init.xavier_uniform_(proj[0].weight, gain=1)
             nn.init.constant_(proj[0].bias, 0)
 
-        # if two-stage, the last class_embed and bbox_embed is for region proposal generation
+        # NOTE if two-stage, the last class_embed and bbox_embed is for region proposal generation
         num_pred = (transformer.decoder.num_layers + 1) if two_stage else transformer.decoder.num_layers
         if with_box_refine:
             self.class_embed = _get_clones(self.class_embed, num_pred)
@@ -169,12 +176,14 @@ class DeformableDETR(nn.Module):
         if instance_align:
             # domain discriminator for instance alignment
             self.instance_D = MLP(hidden_dim, hidden_dim, 1, 3)
+
+            # import pdb; pdb.set_trace()
             for layer in self.instance_D.layers:
                 nn.init.xavier_uniform_(layer.weight, gain=1)
                 nn.init.constant_(layer.bias, 0)
 
 
-    def forward(self, samples: NestedTensor, targets, cur_iter, cur_epoch, total_epoch):
+    def forward(self, samples: NestedTensor, targets, iter_i, cur_epoch, total_epoch):
         """ The forward expects a NestedTensor, which consists of:
                - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
                - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
@@ -193,6 +202,11 @@ class DeformableDETR(nn.Module):
             samples = nested_tensor_from_tensor_list(samples)
 
         features, pos = self.backbone(samples)
+
+
+        # TODO return first and last layers for single scale contrastive exp
+        # first_layer = features[0].tensors
+        # features = features[-1].tensors
 
         # store backbone features and mask tokens
         srcs = []
@@ -229,14 +243,13 @@ class DeformableDETR(nn.Module):
         
         # TODO: debug mode, only allow debug mode at test time and targets are returned only at test time
         if self.debug:
-            hs, memory, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output, _ = self.transformer(srcs, masks, pos, query_embeds)
+            hs, memory, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output, query_pos = self.transformer(srcs, masks, pos, query_embeds)
             # import pdb; pdb.set_trace()
         else:
             # tracemalloc.start()
-            hs, memory, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output, _ = self.transformer(srcs, masks, pos, query_embeds)
+            hs, memory, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output, query_pos = self.transformer(srcs, masks, pos, query_embeds)
             # print(tracemalloc.get_traced_memory())
         
-        # import pdb; pdb.set_trace()
         outputs_classes = []
         outputs_coords = []
 
@@ -266,37 +279,42 @@ class DeformableDETR(nn.Module):
 
         # torch.Size([6, 2, 300, 4])
         outputs_class = torch.stack(outputs_classes)
-        # torch.Size([6, 2, 300, 4])
         outputs_coord = torch.stack(outputs_coords)
-
-        # if scale == 0:
-        #     spatial_scale = 1/8.0
-        # elif scale == 1:
-        #     spatial_scale = 1/16.0
-        # elif scale == 2:
-        #     spatial_scale = 1/32.0 # default
-
+        
+        ### get flattened backbone features
+        # if self.training:
+        #     # prepare input for encoder
+        #     src_flatten = []
+        #     mask_flatten = []
+        #     lvl_pos_embed_flatten = []
+        #     spatial_shapes = []
+        #     # srcs: (B, C, H, W)
+        #     for lvl, (src, mask, pos_embed) in enumerate(zip(srcs, masks, pos)):
+        #         bs, c, h, w = src.shape
+        #         spatial_shape = (h, w)
+        #         spatial_shapes.append(spatial_shape)
+        #         src = src.flatten(2).transpose(1, 2)
+        #         mask = mask.flatten(1)
+        #         pos_embed = pos_embed.flatten(2).transpose(1, 2)
+        #         lvl_pos_embed = pos_embed + self.level_embed[lvl].view(1, 1, -1)
+        #         lvl_pos_embed_flatten.append(lvl_pos_embed)
+        #         src_flatten.append(src) # appends 4 flattened scales
+        #         mask_flatten.append(mask)
+            
+            # mask_flatten = torch.cat(mask_flatten, 1)
+            # TODO add lvl postional embedding to the original positional embedding
+            # lvl_pos_embed_flatten = torch.cat(lvl_pos_embed_flatten, 1)
+        
         if self.training:
-            B = outputs_class.shape[1] # get batch size
+            B = outputs_class.shape[1]
             assert B == memory.shape[0]
 
-            # TODO consider target outputs only
-            # last_layer_out = outputs_class[-1][B//2:] # bs is after layer num
             last_layer_out = outputs_class[-1]
+            outputs_class_conf = F.softmax(last_layer_out, -1) # (2, 300, 9)
 
-
-            ### BUG should we use MLP outputs or last layer softmax outputs
-            # outputs_class_conf = F.softmax(last_layer_out, -1)[:B//2] # (2, 300, 9)
-            outputs_class_conf = F.softmax(last_layer_out, -1)
-            # decreases linearly
             # thresh = 0.9 * max(0.5, 1-(cur_epoch/total_epoch))
 
-            thresh = 0.6
-
-            # # size: [torch.Size([31, 2]), torch.Size([11, 2])]
-            # nonzero returns object query index and the argmax of the class distribution
-            keep = [torch.nonzero(outputs_class_conf[b]>thresh).unsqueeze(0) for b in range(outputs_class_conf.shape[0])] # batch wise
-
+            thresh = 0.8
             thresh_tmp_list = [] # record occuring instances
             try:
                 keep = [torch.nonzero(outputs_class_conf[b]>thresh).unsqueeze(0) for b in range(outputs_class_conf.shape[0])] # batch wise
@@ -315,69 +333,28 @@ class DeformableDETR(nn.Module):
                         keep[i] = keep_tmp
                         thresh_tmp_list.append(thresh_tmp)
 
-            # import pdb; pdb.set_trace()
-            ## decoder features
-            # use matcher idx to get src decoder features
-            # TODO dummy dict
-            # out_dec = {'pred_logits': outputs_class[:B//2][-1], 'pred_boxes': outputs_coords[:B//2][-1]}
-            # indices = self.matcher(out_dec, targets) # 
-            # src_dec_features = []
-            # src_scores = []
-            # src_labels = [] # labels
+            # breakpoint()
+            ### multi-scale memory reshape
+            memory_reshaped = [] # (B,c,h,w)
+            for src in srcs:
+                w = src.shape[-1]
+                h = src.shape[-2]
+                c = src.shape[-3]
+                flat_length = h*w
+                # index first
+                memory_flat = memory[:,:flat_length,:]
+                # then reshape
+                memory_reshaped_tmp = memory_flat.reshape(B,c,h,w)
+                memory_reshaped.append(memory_reshaped_tmp)
 
-            # for batch_idx in range(0, B//2, 1):
-            #     indices_tmp = indices[batch_idx] # tuple
-            #     src_dec_features.append(hs[-1][batch_idx][indices_tmp[0]]) # get object query position only
-            #     scores, _ = torch.max(outputs_class_conf[batch_idx][indices_tmp[0]], 1)
-            #     src_labels.append(targets[batch_idx]['labels'].tolist()) # list
-            #     src_scores.append(scores)
-
-            # tgt_dec_features = []
-            # tgt_scores = []
-            # tgt_labels = []
-            # for batch_idx in range(B//2):
-            #     # import pdb; pdb.set_trace()
-            #     keep_tmp = keep_tgt[batch_idx][:,:,0].tolist()[0] # get list of object query indices
-            #     keep_label_idx = keep_tgt[batch_idx][:,:,1].tolist()[0] # get list of object query indices
-            #     scores, _ = torch.max(outputs_class_conf[batch_idx][keep_tmp], 1)
-            #     tgt_dec_features.append(hs[-1][batch_idx][keep_tmp])
-            #     tgt_labels.append(keep_label_idx)
-            #     tgt_scores.append(scores)
-
-            # list_of_labels_dec = []
-            # list_of_rois_dec = []
-            # list_of_scores_dec = []
-
-            # for features_, scores, labels in zip(src_dec_features, src_scores, src_labels):
-            #     list_of_rois_dec.append(features_)
-            #     list_of_scores_dec.append(scores)
-            #     list_of_labels_dec.append(labels)
-
-            # for features_, scores, labels in zip(tgt_dec_features, tgt_scores, tgt_labels):
-            #     list_of_rois_dec.append(features_)
-            #     list_of_scores_dec.append(scores)
-            #     list_of_labels_dec.append(labels)
-
-            # src_prototypes_dec, tgt_prototypes_dec, alpha_values = weighted_aggregate(B, list_of_labels_dec, list_of_rois_dec, list_of_scores_dec, self.num_classes, self.hidden_dim)
-
-            # src_prototypes_dec = F.normalize(src_prototypes_dec, dim=-1)
-            # tgt_prototypes_dec = F.normalize(tgt_prototypes_dec, dim=-1)
-
-            # prototypes = torch.stack([src_prototypes_dec.unsqueeze(0), tgt_prototypes_dec.unsqueeze(0)], dim=1)
-
-            ### encoder features
-            # torch.Size([2, 512, 84, 167]), torch.Size([2, 1024, 42, 84]), torch.Size([2, 2048, 21, 42])
-            feature_w = features[0].tensors.shape[-1] # w
-            feature_h = features[0].tensors.shape[-2] # h
-            feature_c = memory.shape[-1]
- 
-            memory_reshaped = memory.reshape(-1, feature_h, feature_w, feature_c).permute(0,3,1,2)
-
+            ### get first layer feature
+            # memory_reshaped = memory[:,:feature_w*feature_h].reshape(-1, feature_h, feature_w, feature_c).permute(0,3,1,2)
+            
             list_of_labels_enc = [] # list(list())
             list_of_scores_enc = [] # list of tensors
-            rescaled_boxes_enc = [] # list of tensors (boxes rescaled back to fit the image dim)
+            rescaled_boxes_enc = [] # list of tensors
 
-            # keep source and target separate since it is clearner this way
+            ### get source boxes (index from the same list as tgt)
             for batch_idx in range(0, B//2, 1):
                 # keep_tmp = keep_src[batch_idx][:,:,0].tolist()[0]
                 source_boxes = targets[batch_idx]['boxes']
@@ -393,99 +370,326 @@ class DeformableDETR(nn.Module):
                 scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=0)
                 for b in range(boxes_rescaled.shape[0]):
                     boxes_rescaled[b] *= scale_fct[0] # batch_size = 1, one image
+
                 rescaled_boxes_enc.append(boxes_rescaled) # delist
                 list_of_labels_enc.append(source_labels)
                 list_of_scores_enc.append(source_scores)
-
-            # collect target rois (batch-wise targets)
+      
+            ### collect target boxes (index from the same list as src)
             for batch_idx in range(B//2, B, 1):
                 keep_tmp = keep[batch_idx][:,:,0].tolist()[0] # get list of indices
                 keep_label_idx = keep[batch_idx][:,:,1].tolist()[0]
                 target_boxes = outputs_coord[-1][batch_idx][keep_tmp] # get last layer predicted boxes
-                # TODO rescale boxes (for batch size >1, this is to be modified)
-                boxes_rescaled = box_ops.box_cxcywh_to_xyxy(target_boxes) # src only, batch size = 1
+                boxes_rescaled = box_ops.box_cxcywh_to_xyxy(target_boxes)
                 # and from relative [0, 1] to absolute [0, height] coordinates
-                # not cheating
                 img_sizes = targets[batch_idx]["size"]
-
-                # img_sizes = torch.stack([t["size"] for t in targets_anno_size_only], dim=0)
                 img_h, img_w = img_sizes.unbind(0)
+
+                # since box tensor is (x,y,x,y)
                 scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=0)
+
                 for b in range(boxes_rescaled.shape[0]):
                     boxes_rescaled[b] *= scale_fct[0] # batch_size = 1, one image
 
                 rescaled_boxes_enc.append(boxes_rescaled)
                 list_of_labels_enc.append(keep_label_idx)
-                                
                 scores, _ = torch.max(outputs_class_conf[batch_idx][keep_tmp], dim=1)
                 list_of_scores_enc.append(scores)
 
-                # for box_i in range(boxes.shape[0]):
-                #     memory --> torch.Size([1, c_dim, spatial_dim, spatial_dim])
-                #     boxes --> torch.Size([1, spatial_dim, c_dim])
+            # 1. DEBUG: check pseudo label quality
+            # check_pseudo_boxes(B, targets, samples, rescaled_boxes_enc, list_of_scores_enc, list_of_labels_enc)
 
-            # list_of_labels
-            # contains one source and one target
-            # num_points = rescaled_boxes[0].shape[-1]
-            # affine_warp = torch.zeros((3,3)) # transform matrix
-            # pad num
-            # diff = max(rescaled_boxes[0].shape[0], rescaled_boxes[1].shape[0]) - min(rescaled_boxes[0].shape[0], rescaled_boxes[1].shape[0])
-            
-            # import pdb; pdb.set_trace()
-            # TODO pad proposal boxes
-            # batched rois
+            ### compute src prototypes (NOTE: checked)
+            src_boxes = rescaled_boxes_enc[:B//2]
+            src_scores = list_of_scores_enc[:B//2]
+            src_labels = list_of_labels_enc[:B//2]
 
-            list_of_rois_enc = []
-            for batch_idx in range(B):
-                # rois: torch.Size([31, 256])
-                rois = torchvision.ops.roi_align(memory_reshaped[batch_idx].unsqueeze(0), [rescaled_boxes_enc[batch_idx]], output_size=(7, 7), spatial_scale=1/32.0, aligned=True).mean(3).mean(2)
-                list_of_rois_enc.append(rois)
+            spatial_scales = [1/8.0, 1/16.0, 1/32.0, 1/64.0] # multi-scale
+            # spatial_scales = [1/32.0] # single-scale
 
-            # import pdb; pdb.set_trace()
-            # src_prototypes_enc, _ = weighted_aggregate_tmp(B, list_of_labels_enc[:B//2], list_of_rois_enc[:B//2], list_of_scores_enc[:B//2], self.num_classes, self.hidden_dim)
-            # tgt_prototypes_enc, _ = weighted_aggregate_tmp(B, list_of_labels_enc[B//2:], list_of_rois_enc[B//2:], list_of_scores_enc[B//2:], self.num_classes, self.hidden_dim)
-            
-            ## weighted aggregate
-            src_prototypes_enc, tgt_prototypes_enc, alpha_values = weighted_aggregate(B, list_of_labels_enc, list_of_rois_enc, list_of_scores_enc, self.num_classes, self.hidden_dim)
-            
-            src_prototypes_enc = F.normalize(src_prototypes_enc, dim=-1)
-            tgt_prototypes_enc = F.normalize(tgt_prototypes_enc, dim=-1)
-            
-            
-            # unsqueeze for the sake of input dim to memory
-            src_prototypes_enc = src_prototypes_enc.mean(0)
-            tgt_prototypes_enc = tgt_prototypes_enc.mean(0)
+            list_of_rois_src = [] # [1, 2] (num_boxes, 256)
+            ### compute src rois first
+            for m, scale in zip(memory_reshaped, spatial_scales):
+                list_tmp = []
+                # for src only
+                for batch_idx in range(0, B//2, 1):
+                    # input dim: (N, C, H, W)
+                    rois = torchvision.ops.roi_align(m[batch_idx].unsqueeze(0), [src_boxes[batch_idx]], output_size=(7, 7), spatial_scale=scale, aligned=True).mean(3).mean(2)
+                    list_tmp.append(rois)
 
+                list_of_rois_src.append(list_tmp)
+
+            # NOTE checked
+            ### aggregate src prototypes
+            # batch dim removed after aggregation
+            list_of_src_prototype = [] # [scale], (num_classes, feat_dim)
+            for roi_group in list_of_rois_src:
+                src_prototypes_enc, _ = weighted_aggregate_tmp(B, src_labels, roi_group, src_scores, self.num_classes, self.hidden_dim)
+                list_of_src_prototype.append(src_prototypes_enc)
+            
+
+            src_prototypes_enc = torch.stack(list_of_src_prototype) # (scale, cls_num, feat_dim)
+            src_prototypes_enc = F.normalize(src_prototypes_enc, dim=-1) # normalize
+            
+            # 2. DEBUG: log prototype values
+
+            # NOTE checked
+            ### NOTE in case of empty soruce gts, we take src features from memory
+            for scale_i in range(src_prototypes_enc.shape[0]):
+                for cls_i in range(src_prototypes_enc.shape[1]):
+                    # (scale, bs, class, feat_dim)
+                    # if empty src targets, the corresponding elements are guaranteed to be zeros
+                    if src_prototypes_enc[scale_i][cls_i].sum() == 0:
+                        src_prototypes_enc[scale_i][cls_i] = self.m_items[0][scale_i][cls_i,:].detach()
+
+
+            # 3. DEBUG: check filled prototype values  
+            tgt_boxes = rescaled_boxes_enc[B//2:] # [bs] (, num_rois)
+            tgt_scores = list_of_scores_enc[B//2:] # [bs] (, num_rois)
+            tgt_labels = list_of_labels_enc[B//2:] # [bs] [num_rpis]
+
+            list_of_rois_tgt = [] # [scale_dim, bs, ] (num_boxes, 256, h, w)
+            for m, scale in zip(memory_reshaped, spatial_scales):
+                list_tmp = []
+                # B//2 since we take features from the original encoder
+                for batch_idx in range(0, B//2, 1):
+                    # input dim: (N, C, H, W)
+                    rois = torchvision.ops.roi_align(m[batch_idx].unsqueeze(0), [tgt_boxes[batch_idx]], output_size=(7,7), spatial_scale=scale, aligned=True)
+                    list_tmp.append(rois)
+                list_of_rois_tgt.append(list_tmp)
+
+            # 4. DEBUG: check tgt prototype attention
+            # check_prototype_attention_map(B, src_prototypes_enc, memory_reshaped, tgt_boxes, targets)
+            # breakpoint()
+        
+            list_of_weighted_tgt_rois_final = []
+            # torch.Size([1, 11, 256, 7, 7])
+            for scale_i in range(len(spatial_scales)):
+                list_of_weighted_tgt_rois = []
+                list_of_rois_tgt_tmp = list_of_rois_tgt[scale_i]
+
+                for bs_i in range(B//2):
+                    rois_target = list_of_rois_tgt_tmp[bs_i] # (num_rois, feat_dim, h, w)
+
+                    ### similarity: compute binary mask
+                    filters = src_prototypes_enc[scale_i].squeeze(0).unsqueeze(-1).unsqueeze(-1) # (num_class, feat_dim, 1, 1)
+                    thresh_mask = 0.9 * max(0.5, 1-(cur_epoch/total_epoch))
+                    
+                    scores = F.relu(F.conv2d(rois_target, filters)) # (num_rois, num_classes, 7, 7)
+                    binary_masks = torch.where(scores>thresh_mask, 1, 0) # (num_rois, num_classes, 7, 7)
+
+                    # torch.save(output_tensor, f'./visualization/output_tensor/output_tensor_{iter_i}.pt')
+                    # torch.save(binary_masks, f'./visualization/binary_masks/binary_masks_{iter_i}.pt')
+
+                    # 5. DEBUG: visualize masks
+
+                    # NOTE output contains binary masks for all classes, so we use the predicted 
+                    # confidence to get the corresponding mask
+                    filtered_rois_target_list = [] # [num_rois] (,256)
+                    # filter each roi with the binary mask
+                    for roi_index in range(rois_target.shape[0]):
+                        tgt_label = tgt_labels[bs_i][roi_index]
+                        binary_mask = binary_masks[roi_index, tgt_label-1,:,:] #  (7, 7)
+                        rois_target_tmp = rois_target.squeeze(0)[roi_index] # (256, 7, 7)
+                        filtered_rois_target = rois_target_tmp * binary_mask # (256, 7, 7)
+                        mask_pooled = filtered_rois_target.mean(-1).mean(-1) # avg pool
+
+                        # append along rois num
+                        filtered_rois_target_list.append(mask_pooled)
+
+                    # DEBUG: visualize mask average pooled features
+                    
+                    try:
+                        filtered_rois_target = torch.stack(filtered_rois_target_list).unsqueeze(0)
+                    except RuntimeError:
+                        breakpoint()
+
+                    # NOTE will trigger if wrong computation w/ binary masks
+                    if len(filtered_rois_target_list) == 0:
+                        breakpoint()
+
+                    # append along batch dim
+                    list_of_weighted_tgt_rois.append(filtered_rois_target)
+
+                # append along scale
+                list_of_weighted_tgt_rois_final.append(list_of_weighted_tgt_rois) # BUG fix this to incorporate batch dim
+                
+                ### similarity: compute similarity only
+                # try:
+                    # scores = torch.matmul(rois_target.squeeze(0), src_prototypes_enc_clone.transpose(2,1))
+                # except RuntimeError:
+                    # import pdb; pdb.set_trace()
+                
+                # (bs, num_rois, classes)
+                # scores_normalized = scores.sigmoid()
+                
+                # try:
+                #     max_scores, _ = torch.max(scores_normalized, 2)
+                # except IndexError:
+                #     import pdb; pdb.set_trace()
+
+                # reweight, here we only use max scores, but in the case of spatial features, we have to perform aggregation too
+                # reweighted_rois_target = torch.mul(max_scores.unsqueeze(-1), rois_target) # (1, num_rois, )
+                # list_of_weighted_tgt_rois.append(reweighted_rois_target)
+            
+            ### perform weighted aggregation across tgt rois
+            # batch dim is removed after aggregation
+            list_of_tgt_prototypes= []
+            for roi_scale_group in list_of_weighted_tgt_rois_final:
+                tgt_prototypes_enc, _ = weighted_aggregate_tmp(B, tgt_labels, roi_scale_group, tgt_scores, self.num_classes, self.hidden_dim)
+                tgt_prototypes_enc = F.normalize(tgt_prototypes_enc, dim=-1)
+                list_of_tgt_prototypes.append(tgt_prototypes_enc)
+            
+            
+            # (scale, num_classes, feat_dim)
+            tgt_prototypes_enc = torch.stack(list_of_tgt_prototypes).squeeze(0)
+            
+            # breakpoint()
+            # DEBUG: check tgt prototype attention
+            # check_prototype_attention_map(tgt_prototypes_enc, memory_reshaped, tgt_boxes)
+            
             prototypes = torch.stack([src_prototypes_enc, tgt_prototypes_enc], dim=0)
-            
-            # current iter memory copy
-            # memory_items_copy = self.m_items.detach()
-            prototypes_copy = prototypes.clone()
 
+            # updated_src_prototypes_enc = torch.repeat_interleave(src_prototypes_enc, 2, dim=0)
+            # updated_src_prototypes_enc = updated_src_prototypes_enc.view(memory.shape[0], len(spatial_scales), *updated_src_prototypes_enc.shape[1:])
+            # updated_src_prototypes_enc = src_prototypes_enc.view(memory.shape[0], len(spatial_scales), *updated_src_prototypes_enc.shape[1:])
+            # updated_src_prototypes_enc = tgt_prototypes_enc.view(memory.shape[0], len(spatial_scales), *updated_src_prototypes_enc.shape[1:])
+
+            ### aggregate encoder features from prototypes
+            # updated_src_prototypes_enc = updated_src_prototypes_enc.view(memory.shape[0], len(spatial_scales), *updated_src_prototypes_enc.shape[1:])
+            # aggregated_memory, attn_weights = self.cross_attn_enc(updated_src_prototypes_enc, memory, lvl_pos_embed_flatten, None)
+
+            ### TODO multi scale aggregate with cross attention
+            # import pdb; pdb.set_trace()
+            # class_embeds_enc_list= []
+            # memory_h = srcs[0].shape[-2]
+            # memory_w = srcs[0].shape[-1]
+            # memory_tmp = memory[:, :memory_h*memory_w, :] # e.g (2, 800 ,256)
+            # lvl_pos_embed_flatten_tmp = lvl_pos_embed_flatten[:, :memory_h*memory_w, :]
+            # mask_flatten_tmp = mask_flatten[:, :memory_h*memory_w]
+            # updated_src_prototypes_enc_tmp = updated_src_prototypes_enc[:, 0, :, :]
+            # # use cross attention to aggregate encoder semantics for the initialised source prototypes
+            # class_embeds_enc, _ = self.cross_attn_enc(updated_src_prototypes_enc_tmp, memory_tmp, lvl_pos_embed_flatten_tmp, mask_flatten_tmp)                
+            # class_embeds_enc_list.append(class_embeds_enc)
+            
+            # class_embeds_enc = torch.stack(class_embeds_enc_list)
+            # class_embeds_enc = class_embeds_enc.view(-1, *class_embeds_enc.shape[2:])
+
+            # import pdb; pdb.set_trace()
+            # memory_h = memory_reshaped[0].shape[-2]
+            # memory_w = memory_reshaped[0].shape[-1]
+
+            # memory_reshaped: (B,c,h,w)
+            # fist_layer_feat = memory.view(memory_reshaped[0].shape[0], :memory_reshaped[0].shape[-2]*memory_reshaped[0].shape[-1], memory_reshaped[0].shape[-3])
+            # first_layer_lvl_pos_embed_flatten = lvl_pos_embed_flatten[:, :memory_reshaped[0].shape[-2] * memory_reshaped[0].shape[-1], :]
+            # first_layer_mask_flatten = mask_flatten[:, :memory_reshaped[0].shape[-2] * memory_reshaped[0].shape[-1]]
+            # class_embeds_enc, _ = self.cross_attn_enc(updated_src_prototypes_enc.squeeze(1), fist_layer_feat, first_layer_lvl_pos_embed_flatten, first_layer_mask_flatten)
+            # class_embeds_enc = torch.stack(class_embeds_enc_list)
+            # class_embeds_enc = class_embeds_enc.view(-1, *class_embeds_enc.shape[2:])
+
+            ### perform roi align after
+            # list_of_rois_enc = []
+            # for batch_idx in range(B//2):
+            #     # rois: torch.Size([31, 256])
+            #     rois = torchvision.ops.roi_align(memory_reshaped[batch_idx].unsqueeze(0), [rescaled_boxes_enc[batch_idx]], output_size=(7, 7), spatial_scale=1/32.0, aligned=True).mean(3).mean(2)
+            #     list_of_rois_enc.append(rois)
+            # src_prototypes_enc, source_alphas = weighted_aggregate_source(B, list_of_labels_enc, list_of_rois_enc, list_of_scores_enc, self.num_classes, self.hidden_dim)
+
+            
+            source_alphas = None
+            # breakpoint()
+            prototypes_copy = prototypes.clone()
             if self.ema:
                 new_memory = self.memory(self.m_items, prototypes)
                 self.m_items = new_memory
                 # updated_class_prototypes = new_memory
 
-                ### fill missing class features with memory features
+                ### fill missing class features with memory features (src filled already)
                 for B_i in range(prototypes.shape[0]):
-                    for cls_i, value in enumerate(prototypes[B_i]):
-                        if value.sum().item() == 0.:
-                            # breakpoint()
-                            prototypes_copy[B_i][cls_i] = self.m_items[B_i][cls_i].detach()
+                    for scale_i in range(prototypes.shape[1]):
+                        for cls_i, value in enumerate(prototypes[B_i][scale_i]):
+                            if value.sum().item() == 0.:
+                                prototypes_copy[B_i][scale_i][cls_i] = self.m_items[B_i][scale_i][cls_i].detach()
 
                 # finally assigned back to prototypes
-                prototypes = prototypes_copy
-                # prototypes = F.normalize(prototypes, dim=-1)
+                prototypes = prototypes_copy # (4, 2, 8, 256)
 
-                # breakpoint()
-                # updated_src_prototypes_enc = updated_class_prototypes[0,:,:]
-                # updated_tgt_prototypes_enc = updated_class_prototypes[1,:,:]
-                # updated_src_prototypes_dec = updated_class_prototypes[:,:B//2,:,:]
-                # updated_tgt_prototypes_dec = updated_class_prototypes[:,B//2:,:,:]
+            # breakpoint()
+            # TODO reshape to (batch,...) after ema
+            # updated_class_embeds_enc = updated_class_embeds_enc.view(len(spatial_scales), memory.shape[0], *updated_class_embeds_enc.shape[1:])
 
-                # updated_src_prototypes_dec = src_prototypes_dec
-                # updated_tgt_prototypes_dec = tgt_prototypes_dec
+            ### TODO try using first layer prototypes             
+            # fist_layer_feat = memory_reshaped[0].view(memory_reshaped[0].shape[0], memory_reshaped[0].shape[-2] * memory_reshaped[0].shape[-1], memory_reshaped[0].shape[-3])
+            # first_layer_lvl_pos_embed_flatten = lvl_pos_embed_flatten[:, :memory_reshaped[0].shape[-2] * memory_reshaped[0].shape[-1], :]
+            # first_layer_mask_flatten = mask_flatten[:, :memory_reshaped[0].shape[-2] * memory_reshaped[0].shape[-1]]
+            # # single scale
+            # # import pdb; pdb.set_trace()
+            # class_embeds_enc, attn_weights = self.cross_attn_enc(updated_src_prototypes_enc.squeeze(1), fist_layer_feat, first_layer_lvl_pos_embed_flatten, first_layer_mask_flatten)
+
+            ### visualize attention map
+            # fist_layer_feat[0] for source 
+            # out = self.cos(fist_layer_feat[0], fist_layer_feat[0])
+            # attn_mask = torch.mul(fist_layer_feat[0], out.unsqueeze(-1)).reshape(memory_reshaped[0].shape[1], memory_reshaped[0].shape[2], memory_reshaped[0].shape[3])
+            # attn_mask_max_activation, _ = torch.max(attn_mask, dim=0)
+            # orig_h_scaled = targets[0]['size'][0]//8
+            # orig_w_scaled = targets[0]['size'][1]//8
+
+            # attn_mask_max_activation_unpadded = attn_mask_max_activation[:orig_h_scaled.item(), :orig_w_scaled.item()]
+            # plt.figure(figsize=(30, 50))
+            # plt.imshow(attn_mask_max_activation_unpadded.detach().cpu())
+            # plt.axis('off')
+            # import pdb; pdb.set_trace()
+            # plt.savefig(str('./visualization/encoder_attn_mask_layer1.png'), bbox_inches='tight')
+
+            ### visualize image
+            # unpadded_samples = samples.tensors[0][:, :targets[0]['size'][0], :targets[0]['size'][1]]
+            # sample = samples.tensors[0]
+            # inverted_image_tensor = plot_utils.inverse_transform(sample)
+            # inverted_image_tensor = inverted_image_tensor.permute(1,2,0)
+            # plt.figure(figsize=(30, 50))
+            # plt.imshow(inverted_image_tensor.detach().cpu())
+            # plt.axis('off')
+            # plt.savefig(str('./visualization/sample_image_padded.png'), bbox_inches='tight')
+
+            # import pdb; pdb.set_trace()
+
+            # last_layer_feature = hs[-1]
+            # class_embeds_dec, attn_weights = self.cross_attn_dec(updated_src_prototypes_enc, last_layer_feature, query_pos, None)
+
+            # encoder scores
+            # similarity = torch.softmax(torch.matmul(updated_src_prototypes_enc, memory.transpose(2,1)).transpose(1,2), -1)
+            # # use these scores to aggregate features
+            # class_embeds = torch.matmul(similarity.transpose(2,1), memory) # class embeddings
+
+
+            # import pdb; pdb.set_trace()
+
+            ### TODO viz
+            # enhanced = torch.matmul(updated_src_prototypes_enc.squeeze(0).t(), similarity)
+            # enhanced = torch.matmul(similarity.t(), updated_src_prototypes_enc.squeeze(0))
+
+            # C, H, W for visualization
+            # similarity_reshaped = enhanced.reshape(feature_c, feature_h, feature_w)
+            # average = similarity_reshaped.sum(0)/similarity_reshaped.shape[0]
+
+            # average_feature_map = features[0].tensors[0].mean(0)
+            # average_memory_map = memory_reshaped[0].mean(0)
+
+            # source_memory = memory_reshaped[0]
+            # source_memory = source_memory.mean(0)
+            # target_memory = memory_reshaped[1]
+
+            # plt.figure(figsize=(30, 50))
+            # # plt.imshow(average_feature_map.detach().cpu())
+            # # plt.imshow(average_memory_map.detach().cpu())
+            # plt.imshow(source_memory.detach().cpu())
+            # plt.axis('off')
+            # # plt.savefig(str('./visualization/feature/average_feature_map_{}.png').format(cur_iter_num), bbox_inches='tight')
+            # plt.savefig(str('./visualization/feature_encoder/source_first_layer_feature_map__encoder{}.png').format(cur_iter_num), bbox_inches='tight')
+            # # plt.savefig(str('./visualization/feature_encoder/average_memory_map_{}.png').format(cur_iter_num), bbox_inches='tight')
+            # plt.close()
+
+            # import pdb; pdb.set_trace()
 
         if self.training and self.uda:
             B = outputs_class.shape[1]
@@ -509,23 +713,22 @@ class DeformableDETR(nn.Module):
                 da_output['channel_query'] = self.channel_D(da_output['channel_query'])
             if self.instance_align:
                 da_output['instance_query'] = self.instance_D(da_output['instance_query'])
-
-        # TODO check for nans
-        if torch.isnan(sum(sum(sum(outputs_class[-1])))):
-            import pdb; pdb.set_trace()
         
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
 
-
         # TODO add prototypes to outputs
         if self.training:
-            # out['prototypes'] = {'src_prototypes': src_prototypes, 'tgt_prototypes': tgt_prototypes}
-            alpha_values = None
-            out['prototypes_enc'] = {'src_prototypes_enc': prototypes[0], 'tgt_prototypes_enc': prototypes[1], 'alpha_values': alpha_values}
-            # out['prototypes_dec'] = {'src_prototypes_dec': updated_src_prototypes_dec, 'tgt_prototypes_dec': updated_tgt_prototypes_dec, 'alpha_values': alpha_values}
+            # src_prototypes_enc = updated_class_prototypes[0, :, :]
+            # tgt_prototypes_enc = updated_class_prototypes[1, :, :]
+            # src_prototypes_dec = class_embeds_dec[0]
+            # tgt_prototypes_dec = class_embeds_dec[1]
 
             if len(thresh_tmp_list) > 0:
                 out['thresh_change_occurence'] = thresh_tmp_list
+
+            out['prototypes_enc'] = {'src_prototypes_enc': prototypes[0], 'tgt_prototypes_enc': prototypes[1], 'alpha_values': source_alphas}
+            # import pdb; pdb.set_trace()
+            # out['prototypes_dec'] = {'src_prototypes_dec': src_prototypes_dec, 'tgt_prototypes_dec': tgt_prototypes_dec}
 
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
@@ -537,24 +740,12 @@ class DeformableDETR(nn.Module):
         # discriminator outputs
         if self.training and self.uda:
             out['da_output'] = da_output
+            # TODO testing
             out['thresh'] = thresh
 
-        # TODO to store things for feat aug
-        if self.feat_aug:
-            out['features_source'] = list_of_rois[:B//2] # list of tensors
-            out['y_s'] = list_of_scores[:B//2] # list of tensors
-            out['fc'] = self.class_embed
-            out['source_labels'] = list_of_labels[:B//2] # for computing cross entropy loss
-            target_features = list_of_rois[B//2:]
-            target_labels = list_of_labels[B//2:] # for computing CV
-            target_mean = updated_tgt_prototypes - updated_src_prototypes
-
-            # import pdb; pdb.set_trace()
-            out['covariance_target'] = compute_CV(target_features, target_labels, target_mean, self.num_classes)
 
         if self.debug:
-            # import pdb; pdb.set_trace()
-            return out, features, memory, hs, rescaled_boxes_enc, list_of_labels_enc, list_of_scores_enc
+            return out, features, memory, hs
         else:
             return out
     
@@ -685,47 +876,25 @@ class SetCriterion(nn.Module):
         empty_weight[0] = self.eos_coef
         self.register_buffer('empty_weight', empty_weight)
 
-    def aug(self, s_mean_matrix, t_mean_matrix, fc, features, y_s, labels_s, t_cv_matrix, Lambda):
-        # y_s is source prediction
-        # labels_s is source labels
-        # features are source features
+    def category_token_align_loss(self, outputs):
 
-        y_s =torch.cat(y_s, 0)
-        features =torch.cat(features, 0) # (num_of_rois, feat_dim)
-        labels_s = torch.as_tensor(labels_s).view(-1).cuda() # (b, num_of_labels)
+        import pdb; pdb.set_trace()
+        B = outputs.shape[0]
+        assert B % 2 == 0
 
-        N = features.size(0)
-        C = self.num_classes
-        A = features.size(1)
+        targets = torch.empty_like(outputs)
+        targets[:B//2] = 0
+        targets[B//2:] = 1
 
-        weight_m = list(fc.parameters())[0]
-        NxW_ij = weight_m.expand(N, C, A)
-        NxW_kj = torch.gather(NxW_ij, 1, labels_s.view(N, 1, 1).expand(N, C, A))
-        
         # import pdb; pdb.set_trace()
-        # target covariance matrix
-        t_CV_temp = t_cv_matrix[labels_s]
+        loss = F.binary_cross_entropy_with_logits(outputs, targets, reduction='none')
 
-        sigma2 = Lambda * torch.bmm(torch.bmm(NxW_ij - NxW_kj, t_CV_temp), (NxW_ij - NxW_kj).permute(0, 2, 1))
-        sigma2 = sigma2.mul(torch.eye(C).cuda().expand(N, C, C)).sum(2).view(N, C)
+        if use_focal:
+            prob = outputs.sigmoid()
+            p_t = prob * targets + (1 - prob) * (1 - targets)
+            loss = loss * ((1 - p_t) ** self.da_gamma)
 
-        sourceMean_NxA = s_mean_matrix[labels_s]
-        targetMean_NxA = t_mean_matrix[labels_s]
-        dataMean_NxA = (targetMean_NxA - sourceMean_NxA) # inter domain mean
-        dataMean_NxAx1 = dataMean_NxA.expand(1, N, A).permute(1, 2, 0)
-
-        del t_CV_temp, sourceMean_NxA, targetMean_NxA, dataMean_NxA
-        gc.collect()
-
-        dataW_NxCxA = NxW_ij - NxW_kj # weight differencr
-        dataW_x_detaMean_NxCx1 = torch.bmm(dataW_NxCxA, dataMean_NxAx1)
-        datW_x_detaMean_NxC = dataW_x_detaMean_NxCx1.view(N, C)
-
-        # the denominator term
-        # import pdb; pdb.set_trace()
-        aug_result = y_s + 0.5 * sigma2 + Lambda * datW_x_detaMean_NxC
-
-        return aug_result # (num_src_labels, class_num)
+        return loss.mean()
 
     # deformable detr
     def loss_labels_bce(self, outputs, targets, indices, num_boxes, log=True):
@@ -915,125 +1084,75 @@ class SetCriterion(nn.Module):
 
     # L2 loss
     def distance(self, src_feat, tgt_feat):
-        eps = 1e-7
-        output = torch.pow(src_feat - tgt_feat, 2.0).mean() + eps
-        # DEBUG print gradients
-        # output.register_hook(lambda grad: print(grad))
+        eps = 1e-6
+        # BUG Function 'PowBackward0' returned nan values in its 0th output
+        output = torch.pow((src_feat - tgt_feat), 2.0).mean() + eps
+
         # print(output)
 
         return output
     
-    # TODO in this implementation, the intra class loss between samples is not considered
     def contrastive_loss(self, source, target, alpha_values, margin=1):
 
         intra_loss = 0.
         inter_loss = 0.
 
-        # for b_i in range(source.shape[1]):
-        #     source_tmp = source[b_i]
-        #     target_tmp = target[b_i]
+        # target.register_hook(lambda grad: print(torch.isnan(grad).any()))
+        # source.register_hook(lambda grad: print(torch.isnan(grad).any()))
 
-        for cls_idx in range(self.num_classes-1):
-            # i gives a fixed class
-            tmp_src_feat_1 = source[cls_idx, :] # per class prototype
-            tmp_tgt_feat_1 = target[cls_idx, :] # per class prototype
-            
-            # DEBUG print out
-            # print(self.distance(tmp_src_feat_1, tmp_tgt_feat_1))
-            # print(torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_1)))
+        for scale_i in range(source.shape[0]):
+            # TODO for initial source and target zero entries, 
+            for cls_idx in range(self.num_classes-1):
+                tmp_src_feat_1 = source[scale_i][cls_idx, :] # per class prototype
+                tmp_tgt_feat_1 = target[scale_i][cls_idx, :] # per class prototype
+                
+                # tmp_tgt_feat_1.register_hook(lambda grad: print(torch.isnan(grad).any()))
+                # tmp_tgt_feat_1.register_hook(lambda grad: breakpoint() if torch.isnan(grad).any() == True else print(grad))
 
-            intra_loss = intra_loss + torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_1))
-            # intra_loss = intra_loss + self.distance(tmp_src_feat_1, tmp_tgt_feat_1)
+                # intra
+                intra_loss = intra_loss + torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_1))
+                # intra_loss = intra_loss + self.distance(tmp_src_feat_1, tmp_tgt_feat_1)
 
-            # inter takes into account the current and all other classes
-            for cls_idx_next in range(cls_idx+1, self.num_classes-1):
-                # next class features
-                tmp_src_feat_2 = source[cls_idx_next, :]
-                tmp_tgt_feat_2 = target[cls_idx_next, :]
+                # inter takes into account the current and all other classes
+                for cls_idx_next in range(cls_idx+1, self.num_classes-1):
+                    tmp_src_feat_2 = source[scale_i][cls_idx_next, :]
+                    tmp_tgt_feat_2 = target[scale_i][cls_idx_next, :]
 
-                ### original implementation
-                inter_loss =  inter_loss + torch.pow(
+                    ### original implementation
+                    inter_loss =  inter_loss + torch.pow(
                     (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin,
                     2) * torch.pow(
                     torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2)),
                               torch.tensor(0).float().cuda()), 2.0)
 
-                inter_loss =  inter_loss + torch.pow(
-                    (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))) / margin,
-                    2) * torch.pow(
-                    torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),
-                              torch.tensor(0).float().cuda()), 2.0)
+                    inter_loss =  inter_loss + torch.pow(
+                        (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))) / margin,
+                        2) * torch.pow(
+                        torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),
+                                torch.tensor(0).float().cuda()), 2.0)
 
-                inter_loss =  inter_loss + torch.pow(
-                    (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2))) / margin,
-                    2) * torch.pow(
-                    torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),
-                              torch.tensor(0).float().cuda()), 2.0)
+                    inter_loss =  inter_loss + torch.pow(
+                        (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2))) / margin,
+                        2) * torch.pow(
+                        torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),
+                                torch.tensor(0).float().cuda()), 2.0)
 
-                inter_loss =  inter_loss + torch.pow(
-                    (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2))) / margin,
-                    2) * torch.pow(
-                    torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
-                              torch.tensor(0).float().cuda()), 2.0)
+                    inter_loss =  inter_loss + torch.pow(
+                        (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2))) / margin,
+                        2) * torch.pow(
+                        torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
+                                torch.tensor(0).float().cuda()), 2.0)
 
-
-
-                # inter_loss = inter_loss + alpha_values[0][cls_idx] * alpha_values[1][cls_idx] * torch.pow(
-                #     (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin,
-                #     2) * torch.pow(
-                #     torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2)),
-                #               torch.tensor(0).float().cuda()), 2.0)
-
-                # inter_loss = inter_loss + alpha_values[0][cls_idx] * alpha_values[1][cls_idx] * torch.pow(
-                #     (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))) / margin,
-                #     2) * torch.pow(
-                #     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),
-                #               torch.tensor(0).float().cuda()), 2.0)
-
-                # inter_loss = inter_loss + alpha_values[0][cls_idx] * alpha_values[1][cls_idx] * torch.pow(
-                #     (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2))) / margin,
-                #     2) * torch.pow(
-                #     torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),
-                #               torch.tensor(0).float().cuda()), 2.0)
-
-                # inter_loss = inter_loss + alpha_values[0][cls_idx] * alpha_values[1][cls_idx] * torch.pow(
-                #     (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2))) / margin,
-                #     2) * torch.pow(
-                #     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
-                #               torch.tensor(0).float().cuda()), 2.0)
-
-
-                ### testing
-                # inter_loss =  inter_loss + torch.pow(
-                #     (margin - (self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin,
-                #     2) * torch.pow(
-                #     torch.max(margin - (self.distance(tmp_src_feat_1, tmp_src_feat_2)),
-                #             torch.tensor(0).float().cuda()), 2.0)
-
-                # inter_loss =  inter_loss + torch.pow(
-                #     (margin - (self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))) / margin,
-                #     2) * torch.pow(
-                #     torch.max(margin - (self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),
-                #             torch.tensor(0).float().cuda()), 2.0)
-
-                # inter_loss =  inter_loss + torch.pow(
-                #     (margin - (self.distance(tmp_src_feat_1, tmp_tgt_feat_2))) / margin,
-                #     2) * torch.pow(
-                #     torch.max(margin - (self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),
-                #             torch.tensor(0).float().cuda()), 2.0)
-
-                # inter_loss =  inter_loss + torch.pow(
-                #     (margin - (self.distance(tmp_tgt_feat_1, tmp_src_feat_2))) / margin,
-                #     2) * torch.pow(
-                #     torch.max(margin - (self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
-                #             torch.tensor(0).float().cuda()), 2.0)
-
-                
         # average over all classes*batch_dim 
         intra_loss = intra_loss / source.shape[0]
 
+        # breakpoint()
         # combinations between each class for two domains
         inter_loss = inter_loss / (source.shape[0] * (source.shape[0] - 1) * 2) # at the of the iteration the there will be one "next class" being left off
+
+        # import pdb; pdb.set_trace()
+        # print(intra_loss)
+        # print(inter_loss)
 
         if not torch.is_tensor(intra_loss):
             intra_loss = torch.as_tensor(intra_loss)
@@ -1041,12 +1160,13 @@ class SetCriterion(nn.Module):
         if not torch.is_tensor(inter_loss):
             inter_loss = torch.as_tensor(inter_loss)
 
-        # if isinstance(intra_loss, float) or isinstance(inter_loss, float):
-        #     import pdb; pdb.set_trace()
-
-        # TODO testing
+        # print(type(intra_loss))
+        # print(type(inter_loss))
+        
         # inter_loss = torch.tensor(0.)
         # intra_loss = torch.tensor(0.)
+        # if isinstance(intra_loss, float) or isinstance(inter_loss, float):
+        #     import pdb; pdb.set_trace()
 
         return intra_loss.cuda(), inter_loss.cuda()
 
@@ -1127,13 +1247,24 @@ class SetCriterion(nn.Module):
             for k, v in outputs['da_output'].items():
                 losses[f'loss_{k}'] = self.loss_da(v, use_focal='query' in k)
 
+        if 'class_embeds' in outputs:
+            class_embeds = outputs['class_embeds']
+
+            # import pdb; pdb.set_trace()
+            losses[f'loss_category_token'] = self.category_token_align_loss(class_embeds)
+
         if 'prototypes_enc' in outputs:
             # source and target are lists of class prototypes
             source_enc = outputs['prototypes_enc']['src_prototypes_enc']
             target_enc = outputs['prototypes_enc']['tgt_prototypes_enc']
             alpha_values = outputs['prototypes_enc']['alpha_values']
             
+            # with torch.autograd.set_detect_anomaly(True):
             intra_loss_enc, inter_loss_enc = self.contrastive_loss(source_enc, target_enc, alpha_values, margin = self.margin)
+
+            ### multi scale 
+            # for s_i in range(len(source_enc)):
+                # intra_loss_enc, inter_loss_enc = self.contrastive_loss(source_enc[s_i], target_enc[s_i], alpha_values, margin = self.margin)
         
             # import pdb; pdb.set_trace()
             losses['loss_intra_class_enc'] = intra_loss_enc
@@ -1143,9 +1274,8 @@ class SetCriterion(nn.Module):
             # source and target are lists of class prototypes
             source_dec = outputs['prototypes_dec']['src_prototypes_dec']
             target_dec = outputs['prototypes_dec']['tgt_prototypes_dec']
-            alpha_values = outputs['prototypes_dec']['alpha_values']
-            
-            intra_loss_dec, inter_loss_dec = self.contrastive_loss(source_dec, target_dec, alpha_values, margin = self.margin)
+            # alpha_values = outputs['alpha_values']
+            intra_loss_dec, inter_loss_dec = self.contrastive_loss(source_dec, target_dec, None, margin = self.margin)
 
             losses['loss_intra_class_dec'] = intra_loss_dec
             losses['loss_inter_class_dec'] = inter_loss_dec
@@ -1179,7 +1309,6 @@ class PostProcess(nn.Module):
         """
         out_logits, out_bbox = outputs['pred_logits'], outputs['pred_boxes']
 
-        # import pdb; pdb.set_trace()
         assert len(out_logits) == len(target_sizes)
         assert target_sizes.shape[1] == 2
 
@@ -1214,11 +1343,11 @@ class PostProcess_for_target(nn.Module):
                           For visualization, this should be the image size after data augment, but before padding
         """
         out_bbox = outputs['boxes']
-        # import pdb; pdb.set_trace()
+        out_bbox = out_bbox.unsqueeze(0)
+
         # assert len(out_logits) == len(target_sizes)
         assert target_sizes.shape[1] == 2
 
-        # import pdb; pdb.set_trace()
         # prob = out_logits.sigmoid()
         # topk_values, topk_indexes = torch.topk(prob.view(out_logits.shape[0], -1), 100, dim=1)
         # scores = topk_values

@@ -307,14 +307,15 @@ def main(cfg):
 
         if not cfg.EVAL and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
             import copy
+
+            # copy initialised param group
             p_groups = copy.deepcopy(optimizer.param_groups)
 
-            # pg_old here stands for the initialised optimizer above
             optimizer.load_state_dict(checkpoint['optimizer'])
 
-            # after loading state_dict, the chockpointed value is loaded
+            # # pg_old here stands for the initialised optimizer above
             for pg, pg_old in zip(optimizer.param_groups, p_groups):
-                pg['lr'] = pg_old['lr']
+                pg['lr'] = pg_old['lr'] # replace checkpoint lr with new lr
                 pg['initial_lr'] = pg_old['initial_lr']
 
             print(optimizer.param_groups)
@@ -416,7 +417,7 @@ def main(cfg):
     for epoch in range(START_EPOCH, cfg.TRAIN.EPOCHS):
         if cfg.DIST.DISTRIBUTED:
             sampler_train.set_epoch(epoch)
-            
+        
         cur_epoch = epoch
         # TODO: probe probs, boxes
         if cfg.ACCUMULATE_STATS:
@@ -431,10 +432,12 @@ def main(cfg):
                 base_ds, postprocessors, postprocessors_target, image_ids, cfg.TRAIN.CLIP_MAX_NORM)
             
         if 'thresh_change_occurence' in outputs:
-            torch.save(outputs['thresh_change_occurence'], output_dir / f'thresh_tmp_list_{epoch:04}.pt')
+            (output_dir / 'thresh_change_occurence').mkdir(exist_ok=True)
+            torch.save(outputs['thresh_change_occurence'], output_dir / 'thresh_change_occurence'/ f'thresh_tmp_list_{epoch:04}.pt')
         
-        if 'prototypes_enc' in outputs:
-            torch.save(outputs['prototypes_enc'], output_dir / f'prototypes_epoch_{epoch:04}.pt')
+        if 'memory_prototypes' in outputs['prototypes_enc']:
+            (output_dir / 'memory_prototypes').mkdir(exist_ok=True)
+            torch.save(outputs['prototypes_enc']['memory_prototypes'], output_dir /'memory_prototypes'/ f'ema_prototypes_epoch_{epoch:04}.pt')
 
         if type(thresh_stats)==list():
             if (epoch+1) % 1 == 0:
