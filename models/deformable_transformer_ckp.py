@@ -54,7 +54,7 @@ class DeformableTransformer(nn.Module):
 
         self.decoder = DeformableTransformerDecoder(decoder_layer, num_decoder_layers, return_intermediate_dec)
         # num_decoder_layers = 6
-        # return_intermediate_dec = True, see L599
+        # return_intermediate_dec = True, see #L609
 
         self.level_embed = nn.Parameter(torch.Tensor(num_feature_levels, d_model))
 
@@ -517,7 +517,7 @@ class DeformableTransformerDecoder(nn.Module):
         super().__init__()
         self.layers = _get_clones(decoder_layer, num_layers)
         self.num_layers = num_layers
-        self.return_intermediate = return_intermediate  # always True, see L599
+        self.return_intermediate = return_intermediate  # always True, see #L609
         self.bbox_embed = None  # will be set as `ModuleList[Linear] * 6` in `DeformableDETR`
         self.class_embed = None  # `None` if 1-stage, set as `ModuleList`  if 2-stage
 
@@ -570,11 +570,11 @@ class DeformableTransformerDecoder(nn.Module):
 
                 reference_points = new_reference_points.detach()  # updated `reference_points`
 
-            if self.return_intermediate:  # always True, see L599
+            if self.return_intermediate:  # always True, see #L609
                 intermediate.append(output)
                 intermediate_reference_points.append(reference_points)
 
-        if self.return_intermediate:  # always True, see L599
+        if self.return_intermediate:  # always True, see #L609
             return torch.stack(intermediate), torch.stack(intermediate_reference_points), instance_query
         
         # never called
