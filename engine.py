@@ -12,6 +12,7 @@
 """
 Train and eval functions used in main.py
 """
+from builtins import breakpoint
 import math
 import os
 import sys
@@ -42,11 +43,11 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     print_freq = 1
     
     prefetcher = data_prefetcher(data_loader, device, prefetch=True)
-    samples, targets = prefetcher.next() # samples have been transformed
+    samples, targets = prefetcher.next() # samples have been transformed at this stage
     
     ### testing whether samples and targets are matched
     # root = data_loader.dataset.target.root
-    # # # TODO image from gt
+    # TODO image from gt
     # img_id = targets[1]['image_id'].item()
     # # put channel to last dim
     # # image from loaded sample
@@ -106,10 +107,10 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 
         # TODO testing
-        if 'thresh' in outputs:
-            thresh_record.append(outputs['thresh'])
+        # if 'thresh' in outputs:
+        #     thresh_record.append(outputs['thresh'])
 
-        if 'thresh_change_occurence' in outputs:
+        if 'thresh_change_occurence' in outputs and outputs['thresh_change_occurence']!=0:
             thresh_tmp_list.append(outputs['thresh_change_occurence'])
 
 
@@ -320,6 +321,8 @@ def evaluate(model, criterion, postprocessors, postprocessors_target, data_loade
         
         outputs = model(samples, None, None, None, None)
 
+        # breakpoint()
+
         # import pdb; pdb.set_trace()
         loss_dict = criterion(outputs, targets, mode='test')
         weight_dict = criterion.weight_dict
@@ -420,4 +423,3 @@ def evaluate(model, criterion, postprocessors, postprocessors_target, data_loade
         stats['PQ_th'] = panoptic_res["Things"]
         stats['PQ_st'] = panoptic_res["Stuff"]
     return stats, coco_evaluator
-
