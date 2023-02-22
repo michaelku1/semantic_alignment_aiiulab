@@ -1,5 +1,5 @@
 # ------------------------------------------------------------------------
-# Modified by Wei-Jie Huang
+# Modified by Chung-Hao
 # ------------------------------------------------------------------------
 # Deformable DETR
 # Copyright (c) 2020 SenseTime. All Rights Reserved.
@@ -765,6 +765,12 @@ class DeformableDETR(nn.Module):
 
         if self.training and self.uda:
             B = outputs_class.shape[1]
+
+            # pseudo predictions
+            outputs_class_pseudo = outputs_class[:, B//2:]
+            outputs_coord_pseudo = outputs_coord[:, B//2:]
+
+            # replace with new 
             outputs_class = outputs_class[:, :B//2] # only source data has labels, so we index the first one
             outputs_coord = outputs_coord[:, :B//2]
 
@@ -786,7 +792,7 @@ class DeformableDETR(nn.Module):
             if self.instance_align:
                 da_output['instance_query'] = self.instance_D(da_output['instance_query'])
         
-        out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
+        out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1], 'pred_logits_pseudo': outputs_class_pseudo[-1], 'pred_boxes_pseudo': outputs_coord_pseudo[-1]}
 
         # TODO add prototypes to outputs
         if self.training:
@@ -1204,6 +1210,7 @@ class SetCriterion(nn.Module):
                 # tmp_tgt_feat_1.register_hook(lambda grad: breakpoint() if torch.isnan(grad).any() == True else print(grad))
                 
                 # bg loss
+                # breakpoint()
                 bg_loss = bg_loss + torch.sqrt(self.distance(bg_proto, tmp_tgt_feat_1))
 
                 # intra
