@@ -78,13 +78,14 @@ class DeformableDETR(nn.Module):
         # self.cross_attn = CrossAttention_agg_encoder(transformer.d_model, transformer.nhead, 0.1)
         self.ema = ema
 
-        if num_feature_levels == 4:
-            self.m_items = nn.Parameter(torch.full((2,4, num_classes-1, transformer.d_model), 1e-6),
-                                                                            requires_grad=True).cuda()
-        elif num_feature_levels ==1:
-            self.m_items = nn.Parameter(torch.full((2, 1, num_classes-1, transformer.d_model), 1e-6),
-                                                                            requires_grad=True).cuda()
+        # self.m_items = nn.Parameter(torch.full((2,num_feature_levels, num_classes-1, transformer.d_model), 1e-6),
+        #                                                                 requires_grad=False).cuda()
+        self.m_items = nn.Parameter(torch.zeros((2, num_feature_levels, num_classes-1, transformer.d_model)),
+                                                                        requires_grad=False).cuda()
 
+        torch.nn.init.trunc_normal_(self.m_items, std=0.02)
+
+        # breakpoint()
         self.num_queries = num_queries
         self.transformer = transformer
         hidden_dim = transformer.d_model
