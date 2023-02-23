@@ -38,9 +38,11 @@ from .deformable_transformer_contrastive import build_deforamble_transformer
 from .utils import GradientReversal, FCDiscriminator, CrossAttention_agg_prototypes, CrossAttention_agg_encoder
 import copy
 from .memory_ema import Memory
-from .utils import compute_CV, weighted_aggregate, weighted_aggregate_tmp, find_thresh
+from .utils import compute_CV, weighted_aggregate, weighted_aggregate_tmp, find_thresh, attention_module_multi_head
 
 from .debug_tools import *
+
+from .deformable_transformer_contrastive import TransformerEncoder, TransformerEncoderLayer
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
@@ -68,6 +70,15 @@ class DeformableDETR(nn.Module):
         if ema:
             self.memory = Memory(num_classes, transformer.d_model, keep_rate = keep_rate, num_feature_levels=num_feature_levels)
         
+        # normalize_before = False
+        # encoder_layer = TransformerEncoderLayer(transformer.d_model, transformer.nhead, transformer.dim_feedforward,
+        #                                         0.1, transformer.activation, normalize_before)
+
+        # num_encoder_layers = 1
+        # encoder_norm = nn.LayerNorm(transformer.d_model) if normalize_before else None
+        # self.encoder_detr = TransformerEncoder(encoder_layer, num_encoder_layers, encoder_norm)
+
+
         self.gradient = None # for hooks
         self.cam_viz = cam_viz
         # self.cos = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
@@ -76,14 +87,14 @@ class DeformableDETR(nn.Module):
         # self.cross_attn_enc = CrossAttention_agg_prototypes(transformer.d_model, transformer.nhead, 0.1)
         # self.cross_attn_dec = CrossAttention_agg_prototypes(transformer.d_model, transformer.nhead, 0.1)
         # self.cross_attn = CrossAttention_agg_encoder(transformer.d_model, transformer.nhead, 0.1)
-        self.ema = ema
 
+        self.ema = ema
         self.m_items = nn.Parameter(torch.full((2,num_feature_levels, num_classes-1, transformer.d_model), 1e-6),
                                                                         requires_grad=False).cuda()
-#         self.m_items = nn.Parameter(torch.zeros((2, num_feature_levels, num_classes-1, transformer.d_model)),
-#                                                                         requires_grad=False).cuda()
+        # self.m_items = nn.Parameter(torch.zeros((2, num_feature_levels, num_classes-1, transformer.d_model)),
+        #                                                                 requires_grad=False).cuda()
 
-#         torch.nn.init.trunc_normal_(self.m_items, std=0.02)
+        # torch.nn.init.trunc_normal_(self.m_items, std=0.02)
 
         # breakpoint()
         self.num_queries = num_queries
@@ -211,11 +222,6 @@ class DeformableDETR(nn.Module):
 
         features, pos = self.backbone(samples)
 
-
-        # TODO return first and last layers for single scale contrastive exp
-        # first_layer = features[0].tensors
-        # features = features[-1].tensors
-
         # store backbone features and mask tokens
         srcs = []
         masks = []
@@ -250,12 +256,13 @@ class DeformableDETR(nn.Module):
             query_embeds = self.query_embed.weight
         
         if self.debug:
-            hs, memory, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output, query_pos = self.transformer(srcs, masks, pos, query_embeds)
+            hs, memory, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output, query_pos, encoder_feat_info = self.transformer(srcs, masks, pos, query_embeds)
         else:
             # tracemalloc.start()
-            hs, memory, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output, query_pos = self.transformer(srcs, masks, pos, query_embeds)
+            hs, memory, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output, query_pos, encoder_feat_info = self.transformer(srcs, masks, pos, query_embeds)
             # print(tracemalloc.get_traced_memory())
         
+        # breakpoint()
 
         if self.cam_viz:
             # NOTE apply hook function on the desired feature activation
@@ -322,14 +329,15 @@ class DeformableDETR(nn.Module):
             assert B == memory.shape[0]
 
             last_layer_out = outputs_class[-1]
-            outputs_class_conf = F.softmax(last_layer_out, -1) # (2, 300, 9)
+            # outputs_class_conf = F.softmax(last_layer_out, -1) # (2, 300, 9)
+            outputs_class_conf = last_layer_out.sigmoid()
 
-            # thresh = 0.9 * max(0.5, 1-(cur_epoch/total_epoch))
-
-            thresh = 0.9
+            thresh = 0.8
             thresh_tmp_list = [] # record occuring instances
             try:
                 keep = [torch.nonzero(outputs_class_conf[b]>thresh).unsqueeze(0) for b in range(outputs_class_conf.shape[0])] # batch wise
+                
+                # breakpoint()
                 find_empty = [keep_tensor for keep_tensor in keep if keep_tensor.numel() == 0]
                 assert len(find_empty) == 0 # assert error if empty
             
@@ -410,9 +418,9 @@ class DeformableDETR(nn.Module):
                 # img_sizes = torch.stack([t["size"] for t in targets], dim=0)
                 img_sizes = targets[batch_idx]["size"]
                 img_h, img_w = img_sizes.unbind(0)
-                scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=0)
+                scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=0) # different scale factor for different images
                 for b in range(boxes_rescaled.shape[0]):
-                    boxes_rescaled[b] *= scale_fct[0] # batch_size = 1, one image
+                    boxes_rescaled[b] *= scale_fct
 
                 rescaled_boxes_enc.append(boxes_rescaled) # delist
                 list_of_labels_enc.append(source_labels)
@@ -432,7 +440,7 @@ class DeformableDETR(nn.Module):
                 scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=0)
 
                 for b in range(boxes_rescaled.shape[0]):
-                    boxes_rescaled[b] *= scale_fct[0] # batch_size = 1, one image
+                    boxes_rescaled[b] *= scale_fct # batch_size = 1, one image
 
                 rescaled_boxes_enc.append(boxes_rescaled)
                 list_of_labels_enc.append(keep_label_idx)
@@ -452,6 +460,7 @@ class DeformableDETR(nn.Module):
             else:
                 spatial_scales = [1/32.0] # single-scale
 
+            # breakpoint()
             list_of_rois_src = [] # [scale, bs] (num_boxes, 256)
             ### compute src rois first
             for m, scale in zip(memory_reshaped, spatial_scales):
@@ -524,6 +533,10 @@ class DeformableDETR(nn.Module):
             # lambda_a = 0.999 * max(0.5, 1-(cur_epoch/total_epoch))
             # biased_src_prototypes = lambda_a*src_prototypes_enc + (1-lambda_a)*domain_bias
 
+            # for detr transformer 
+            src_flatten, level_start_index, valid_ratios, \
+            lvl_pos_embed_flatten, mask_flatten = encoder_feat_info.items()
+
             list_of_weighted_tgt_rois_final = [] # [scale, bs] (num_rois, 1, feat_dim)
             list_of_weighted_tgt_rois_bg_final = []
             # torch.Size([1, 11, 256, 7, 7])
@@ -536,22 +549,19 @@ class DeformableDETR(nn.Module):
                     rois_target = list_of_rois_tgt_tmp[bs_i] # (num_rois, feat_dim, h, w)
 
                     ### similarity: compute binary mask
-                    # filters = biased_src_prototypes.squeeze(0).unsqueeze(-1).unsqueeze(-1)
                     filters = src_prototypes_enc[scale_i].squeeze(0).unsqueeze(-1).unsqueeze(-1) # (num_class, feat_dim, 1, 1)
-                    # thresh_mask = 0.9 * max(0.5, 1-(cur_epoch/total_epoch))
-                    thresh_mask = 0.8
                     
-                    scores = F.relu(F.conv2d(rois_target, filters)) # (num_rois, num_classes, 7, 7)
+                    thresh_mask = 0.8
+                                        
+                    scores = F.conv2d(rois_target, filters).sigmoid() # (num_rois, num_classes, 7, 7)
                     binary_masks = torch.where(scores>thresh_mask, 1, 0) # (num_rois, num_classes, 7, 7)
-
-                    # NOTE try to model background prototype
+                    # background prototype
                     binary_masks_bg = torch.where(scores<thresh_mask, 1, 0)
 
                     # torch.save(output_tensor, f'./visualization/output_tensor/output_tensor_{iter_i}.pt')
                     # torch.save(binary_masks, f'./visualization/binary_masks/binary_masks_{iter_i}.pt')
 
                     # 5. DEBUG: visualize masks
-
                     # NOTE output contains binary masks for all classes, so we use the predicted 
                     # confidence to get the corresponding mask
                     filtered_rois_target_list = [] # [num_rois] (,256)
@@ -561,7 +571,7 @@ class DeformableDETR(nn.Module):
                         tgt_label = tgt_labels[bs_i][roi_index]
                         binary_mask = binary_masks[roi_index, tgt_label-1,:,:] #  (7, 7)
                         binary_mask_bg = binary_masks_bg[roi_index, tgt_label-1,:,:]
-                        rois_target_tmp = rois_target.squeeze(0)[roi_index] # (256, 7, 7)
+                        rois_target_tmp = rois_target.squeeze(0)[roi_index] # (256, 7, 7)７
                         filtered_rois_target = rois_target_tmp * binary_mask # (256, 7, 7)
                         filtered_rois_target_bg = rois_target_tmp * binary_mask_bg
                         mask_pooled = filtered_rois_target.mean(-1).mean(-1) # avg pool
@@ -590,7 +600,8 @@ class DeformableDETR(nn.Module):
                 # append along scale
                 list_of_weighted_tgt_rois_final.append(list_of_weighted_tgt_rois) # BUG fix this to incorporate batch dim
                 list_of_weighted_tgt_rois_bg_final.append(list_of_weighted_tgt_rois_bg)
-
+                
+                # breakpoint()
                 ### similarity: compute similarity only
                 # try:
                     # scores = torch.matmul(rois_target.squeeze(0), src_prototypes_enc_clone.transpose(2,1))
@@ -617,7 +628,6 @@ class DeformableDETR(nn.Module):
             # breakpoint()
             bg_tgt_scores = [torch.ones(tgt_scores[bs_i].shape[0]).cuda()-tgt_scores[bs_i] for bs_i in range(len(tgt_scores))]
             
-
             for roi_scale_group, roi_scale_group_bg in zip(list_of_weighted_tgt_rois_final, list_of_weighted_tgt_rois_bg_final):
                 tgt_prototypes_enc, _ = weighted_aggregate_tmp(B, tgt_labels, roi_scale_group, tgt_scores, src_prototypes_enc, self.num_classes, self.hidden_dim)
                 tgt_prototypes_enc_bg, _ = weighted_aggregate_tmp(B, tgt_labels, roi_scale_group_bg, bg_tgt_scores, None, self.num_classes, self.hidden_dim) # (class_num, feat_dim)
@@ -744,8 +754,6 @@ class DeformableDETR(nn.Module):
             # # use these scores to aggregate features
             # class_embeds = torch.matmul(similarity.transpose(2,1), memory) # class embeddings
 
-
-            # import pdb; pdb.set_trace()
 
             ### TODO viz
             # enhanced = torch.matmul(updated_src_prototypes_enc.squeeze(0).t(), similarity)
@@ -1252,37 +1260,37 @@ class SetCriterion(nn.Module):
 
                     ### original implementation
                     # breakpoint()
-                    # inter_loss =  inter_loss + ((margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2)),torch.tensor(0).float().cuda())
+                    inter_loss =  inter_loss + ((margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2)),torch.tensor(0).float().cuda())
 
-                    # inter_loss =  inter_loss + ((margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),torch.tensor(0).float().cuda())
+                    inter_loss =  inter_loss + ((margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),torch.tensor(0).float().cuda())
 
-                    # inter_loss =  inter_loss + ((margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),torch.tensor(0).float().cuda())
+                    inter_loss =  inter_loss + ((margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),torch.tensor(0).float().cuda())
 
-                    # inter_loss =  inter_loss + ((margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),torch.tensor(0).float().cuda())
+                    inter_loss =  inter_loss + ((margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),torch.tensor(0).float().cuda())
 
-                    inter_loss =  inter_loss + torch.pow(
-                    (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin,
-                    2) * torch.pow(
-                    torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2)),
-                              torch.tensor(0).float().cuda()), 2.0)
+                    # inter_loss =  inter_loss + torch.pow(
+                    # (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin,
+                    # 2) * torch.pow(
+                    # torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2)),
+                    #           torch.tensor(0).float().cuda()), 2.0)
 
-                    inter_loss =  inter_loss + torch.pow(
-                        (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))) / margin,
-                        2) * torch.pow(
-                        torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),
-                                torch.tensor(0).float().cuda()), 2.0)
+                    # inter_loss =  inter_loss + torch.pow(
+                    #     (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))) / margin,
+                    #     2) * torch.pow(
+                    #     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),
+                    #             torch.tensor(0).float().cuda()), 2.0)
 
-                    inter_loss =  inter_loss + torch.pow(
-                        (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2))) / margin,
-                        2) * torch.pow(
-                        torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),
-                                torch.tensor(0).float().cuda()), 2.0)
+                    # inter_loss =  inter_loss + torch.pow(
+                    #     (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2))) / margin,
+                    #     2) * torch.pow(
+                    #     torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),
+                    #             torch.tensor(0).float().cuda()), 2.0)
 
-                    inter_loss =  inter_loss + torch.pow(
-                        (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2))) / margin,
-                        2) * torch.pow(
-                        torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
-                                torch.tensor(0).float().cuda()), 2.0)
+                    # inter_loss =  inter_loss + torch.pow(
+                    #     (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2))) / margin,
+                    #     2) * torch.pow(
+                    #     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
+                    #             torch.tensor(0).float().cuda()), 2.0)
 
         intra_loss = intra_loss / source.shape[1] # average over class dim
 
