@@ -419,13 +419,16 @@ class DeformableDETR(nn.Module):
                 img_sizes = targets[batch_idx]["size"]
                 img_h, img_w = img_sizes.unbind(0)
                 scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=0) # different scale factor for different images
+                
+                # scale all boxes with the corresponding image sizes
                 for b in range(boxes_rescaled.shape[0]):
                     boxes_rescaled[b] *= scale_fct
 
                 rescaled_boxes_enc.append(boxes_rescaled) # delist
                 list_of_labels_enc.append(source_labels)
                 list_of_scores_enc.append(source_scores)
-      
+
+
             ### collect target boxes (index from the same list as src)
             for batch_idx in range(B//2, B, 1):
                 keep_tmp = keep[batch_idx][:,:,0].tolist()[0] # get list of indices
@@ -436,11 +439,13 @@ class DeformableDETR(nn.Module):
                 img_sizes = targets[batch_idx]["size"]
                 img_h, img_w = img_sizes.unbind(0)
 
+                # breakpoint()
                 # since box tensor is (x,y,x,y)
                 scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=0)
-
+                
+                # 
                 for b in range(boxes_rescaled.shape[0]):
-                    boxes_rescaled[b] *= scale_fct # batch_size = 1, one image
+                    boxes_rescaled[b] *= scale_fct
 
                 rescaled_boxes_enc.append(boxes_rescaled)
                 list_of_labels_enc.append(keep_label_idx)
@@ -863,7 +868,17 @@ class DeformableDETR(nn.Module):
             # then reshape
             memory_reshaped = memory_flat.reshape(B,c,h,w)
 
-            return out, features, memory_reshaped, hs, self.m_items
+            # move to cpu for plots
+            rescaled_boxes = []
+            list_of_scores = []
+            list_of_labels = []
+            for box, score, label in zip(rescaled_boxes_enc, list_of_scores_enc, list_of_labels_enc):
+                list_of_scores.append(score.detach().cpu())
+                rescaled_boxes.append(box.detach().cpu())
+                list_of_labels.append(label)
+
+            # return out, features, memory_reshaped, hs, self.m_items
+            return out, rescaled_boxes, list_of_scores, list_of_labels
         else:
             return out
     
@@ -1467,6 +1482,7 @@ class PostProcess(nn.Module):
         assert len(out_logits) == len(target_sizes)
         assert target_sizes.shape[1] == 2
 
+        # breakpoint()
         prob = out_logits.sigmoid()
         topk_values, topk_indexes = torch.topk(prob.view(out_logits.shape[0], -1), 100, dim=1)
         scores = topk_values
@@ -1478,6 +1494,7 @@ class PostProcess(nn.Module):
         # and from relative [0, 1] to absolute [0, height] coordinates
         img_h, img_w = target_sizes.unbind(1)
         scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1)
+        # batch wise
         boxes = boxes * scale_fct[:, None, :]
 
         results = [{'scores': s, 'labels': l, 'boxes': b} for s, l, b in zip(scores, labels, boxes)]
