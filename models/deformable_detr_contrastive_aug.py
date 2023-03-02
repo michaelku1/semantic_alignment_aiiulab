@@ -295,8 +295,12 @@ class DeformableDETR(nn.Module):
             thresh = 0.6
             # # size: [torch.Size([31, 2]), torch.Size([11, 2])]
             # nonzero returns object query index and the argmax of the class distribution
-            keep = [torch.nonzero(outputs_class_conf[b]>thresh).unsqueeze(0) for b in range(outputs_class_conf.shape[0])] # batch wise
+            keep = [torch.nonzero(\[b]>thresh).unsqueeze(0) for b in range(outputs_class_conf.shape[0])] # batch wise
+            
+            if keep[0].nelement() == 0:
+                print('Pass!!!')
                 
+
             # TODO dummy dict
             out_dec = {'pred_logits': outputs_class[:B//2][-1], 'pred_boxes': outputs_coords[:B//2][-1]}
             indices = self.matcher(out_dec, targets[:B//2])
