@@ -188,7 +188,7 @@ class DeformableDETR(nn.Module):
             _len_srcs = len(srcs)
             for l in range(_len_srcs, self.num_feature_levels):
                 if l == _len_srcs:
-                    src = self.input_proj[l](features[-1].tensors)
+                    src = self.input_proj[l](features[-1].tensors)  # (2, 2048, 21,  42) -> (2, 256, 11, 21)
                 else:
                     src = self.input_proj[l](srcs[-1])
                 m = samples.mask
