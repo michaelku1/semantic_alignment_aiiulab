@@ -12,13 +12,10 @@
 """
 Utilities for bounding box manipulation and GIoU.
 """
+import os
+
 import torch
 from torchvision.ops.boxes import box_area
-import matplotlib.pyplot as plt
-# import matplotlib.image as mpimg
-from PIL import Image
-from torchvision.utils import save_image
-import os
 
 
 def box_cxcywh_to_xyxy(x):

@@ -55,13 +55,20 @@ class FCDiscriminator(nn.Module):
 
 # NOTE checked
 def weighted_aggregate_tmp(batch_d, list_of_labels, list_of_rois, list_of_scores, src_prototypes,
-                            num_classes, hidden_dim):
+                           num_classes, hidden_dim):
     
     """
     weighted aggregation for rois of each domain: weight --> group rois --> aggregate
+
+    list_of_labels: [
+        [cls_0, ..., cls_nonzeros]: labels of img_0,
+        [cls_0, ..., cls_nonzeros]: labels of img_1,
+    ]
+    list_of_rois: [(#box_in_img_0, C), (#box_in_img_1, C), ...] under the specific scale
+    list_of_scores: []
     """
 
-    B = batch_d//2
+    B = batch_d // 2
 
     source_labels = []
     weighted_rois_source = []

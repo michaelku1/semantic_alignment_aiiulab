@@ -95,6 +95,8 @@ _C.MODEL.TAU = 0.2
 _C.MODEL.GAMMA = 0.1
 _C.MODEL.MARGIN = 0.01
 _C.MODEL.CENTERS = 10
+_C.MODEL.PROPOSAL_FROM = 'encoder'
+_C.MODEL.PROPOSAL_LEVELS = [0]
 
 
 # ------------------------------------------------------------------------
@@ -145,6 +147,8 @@ _C.LOSS.MULTI_LABEL_LOSS_COEF = 0.1
 _C.LOSS.LAMDA = 0.25
 _C.LOSS.AUG_LOSS_COEF = 1.
 _C.LOSS.EOS_COEF = 0.1
+_C.LOSS.BG_LOSS_COEF = 1.
+_C.LOSS.CATEGORY_TOKEN_LOSS_COEF = 0.1
 
 # ------------------------------------------------------------------------
 # dataset parameters
@@ -190,6 +194,15 @@ _C.EMA = False
 _C.FEAT_AUG = False
 _C.ACCUMULATE_STATS = False
 _C.CONTRASTIVE = False
+
+# ------------------------------------------------------------------------
+# Plot box
+# ------------------------------------------------------------------------
+_C.PLOT = CN()
+_C.PLOT.PLOT_BBOX = False
+_C.PLOT.PLOT_MAP = False
+_C.PLOT.SCORE_THRESHOLD = 0.5
+_C.PLOT.IMG_IDS  = []
 
 
 def get_cfg_defaults():

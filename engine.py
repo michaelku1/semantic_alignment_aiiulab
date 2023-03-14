@@ -12,7 +12,6 @@
 """
 Train and eval functions used in main.py
 """
-from builtins import breakpoint
 import math
 import os
 import sys
@@ -23,16 +22,20 @@ import util.misc as utils
 from datasets.coco_eval import CocoEvaluator
 from datasets.panoptic_eval import PanopticEvaluator
 from datasets.data_prefetcher import data_prefetcher
-from util.box_ops import plot_results, plot_results_train
+from util.box_ops import plot_results
+from util.plot_utils import plot_bbox, plot_tgt_map
 import matplotlib.pyplot as plt
 from PIL import Image
 import numpy as np
+from pathlib import Path
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, total_epoch:int, cur_epoch: int,
                     base_ds, postprocessors, postprocessors_target, visualize_image_ids,
-                    max_norm: float = 0):
+                    max_norm: float = 0,
+                    cfg=None, **kwargs
+    ):
     model.train()
     criterion.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -196,7 +199,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                 info_all['gt'] = [boxes_gt, label_gt, prob_gt]
 
                 # TODO plot both grountruth and predicted boxes
-                plot_results_train(info_all, img_id, full_path, target_sample)
+                # plot_results_train(info_all, img_id, full_path, target_sample)
 
                 loss_dict_n_indices = criterion(out, targets, mode='train')
                 loss_dict, returned_indices = loss_dict_n_indices
@@ -269,6 +272,50 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(grad_norm=grad_total_norm)
 
+        # ↓↓↓ plot pseudo boxes ↓↓↓
+        if kwargs['plot_bbox']:
+            B = len(targets)
+            tgt_tensors = samples.tensors[B//2:]
+            tgt_targets = targets[B//2:]
+            tgt_outputs = {
+                'pred_logits': outputs['tgt_pred_logits'],
+                'pred_boxes': outputs['tgt_pred_boxes']
+            }
+            orig_tgt_target_sizes = torch.stack([t["size"] for t in tgt_targets], dim=0)
+            results = postprocessors['bbox'](tgt_outputs, orig_tgt_target_sizes)
+            res = {target['image_id'].item(): output for target, output in zip(tgt_targets, results)}
+            img_tensors = {target['image_id'].item(): output for target, output in zip(tgt_targets, tgt_tensors)}
+            
+            plot_bbox(
+                img_tensors=img_tensors,
+                res=res,
+                coco=data_loader.dataset.target.coco,
+                box_save_dir=Path(cfg.OUTPUT_DIR) / 'plot_bbox',
+                score_threshold=cfg.PLOT.SCORE_THRESHOLD,
+                img_ids=cfg.PLOT.IMG_IDS,
+                prefix=kwargs['prefix']
+            )
+        # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
+
+        # ↓↓↓ plot proposal score map ↓↓↓
+        # import pdb; pdb.set_trace()
+        if kwargs['plot_map']:
+            B = len(targets)
+            tgt_targets = targets[B//2:]
+            tgt_tensors = samples.tensors[B//2:]
+            tgt_tensors = {target['image_id'].item(): output for target, output in zip(tgt_targets, tgt_tensors)}
+
+            plot_tgt_map(
+                tgt_tensors=tgt_tensors,
+                tgt_res=outputs['tgt_map_out'],
+                coco=data_loader.dataset.target.coco,
+                map_save_dir=Path(cfg.OUTPUT_DIR) / 'plot_map',
+                img_ids=cfg.PLOT.IMG_IDS,
+                prefix=kwargs['prefix']
+            )
+        # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
+
+
         samples, targets = prefetcher.next()
     
     print(missing_source)
@@ -292,7 +339,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 
 @torch.no_grad()
-def evaluate(model, criterion, postprocessors, postprocessors_target, data_loader, base_ds, device, output_dir):
+def evaluate(model, criterion, postprocessors, postprocessors_target, data_loader, base_ds, device, output_dir, **kwargs):
     model.eval()
     criterion.eval()
 
@@ -382,6 +429,31 @@ def evaluate(model, criterion, postprocessors, postprocessors_target, data_loade
         # keys store key ids 
         # scores are ranked
         res = {target['image_id'].item(): output for target, output in zip(targets, results)}
+
+        # ↓↓↓ plot pseudo boxes ↓↓↓
+        if kwargs['plot_bbox']:
+            plot_bbox(
+                coco=coco_evaluator.coco_gt,
+                res=res,
+                root_dir=data_loader.dataset.root,
+                box_save_dir=Path(cfg.OUTPUT_DIR) / 'plot_bbox',
+                score_threshold=cfg.PLOT.SCORE_THRESHOLD,
+                img_ids=cfg.PLOT.IMG_IDS,
+                prefix=kwargs['prefix']
+            )
+        # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
+
+        # ↓↓↓ plot proposal score map ↓↓↓
+        if kwargs['plot_map']:
+            plot_tgt_map(
+                coco=data_loader.dataset.target.coco,
+                res=outputs['tgt_map_out'],
+                root_dir=data_loader.dataset.target.root,
+                map_save_dir=Path(cfg.OUTPUT_DIR) / 'plot_map',
+                img_ids=cfg.PLOT.IMG_IDS,
+                prefix=kwargs['prefix']
+            )
+        # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
 
         # import pdb; pdb.set_trace()
         if coco_evaluator is not None:

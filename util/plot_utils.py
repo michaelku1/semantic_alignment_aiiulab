@@ -12,12 +12,18 @@
 """
 Plotting utilities to visualize training logs.
 """
-import torch
+import cv2
+import numpy as np
 import pandas as pd
+from PIL import Image
+from pathlib import Path, PurePath
+from typing import Dict, List, Optional
 import seaborn as sns
 import matplotlib.pyplot as plt
+import matplotlib.patches as patches
 
-from pathlib import Path, PurePath
+import torch
+from torchvision.utils import make_grid
 
 
 def plot_logs(logs, fields=('class_error', 'loss_bbox_unscaled', 'mAP'), ewm_col=0, log_name='log.txt', mode='test'):
@@ -130,3 +136,193 @@ def plot_precision_recall(files, naming_scheme='iter'):
     return fig, axs
 
 
+def plot_bbox(
+    img_tensors: Dict,
+    res: Dict,
+    coco,
+    box_save_dir: str,
+    score_threshold: int = 0.5,
+    img_ids: Optional[List[int]] = None,
+    prefix: Optional[str] = None
+):
+    box_save_dir = Path(box_save_dir)
+    if not box_save_dir.exists():
+        box_save_dir.mkdir()
+
+    img_ids = img_ids if img_ids is not None else coco.getImgIds()
+
+    # BGR colors for all categories
+    colors = [
+        (47, 52, 227),
+        (63, 153, 246),
+        (74, 237, 255),
+        (114, 193, 56),
+        (181, 192, 77),
+        (220, 144, 52),
+        (205, 116, 101),
+        (226, 97, 149),
+        (155, 109, 246),
+    ]
+
+    fontFace = cv2.FONT_HERSHEY_COMPLEX
+    fontScale = 0.5
+    thickness = 1
+
+    for img_id, img_tensor in img_tensors.items():
+        if img_id not in img_ids:
+            continue
+        
+        img = img_tensor_to_cv2(img_tensor)
+
+        output = res[img_id]
+        label_count = {i: 0 for i in range(1, 9)}
+        for score, label, box in zip(output['scores'], output['labels'], output['boxes']):
+            if score < score_threshold:
+                continue
+
+            label_name = coco.cats[label.item()]['name']
+            title = f'{label_name}({score.item():.3f})'
+            label_count[label.item()] += 1
+
+            x1, y1, x2, y2 = np.round(box.cpu().numpy()).astype(np.int)
+
+            labelSize = cv2.getTextSize(title, fontFace, fontScale, thickness)
+            color = colors[label.item()]
+            text_color = (0, 0, 0) if label_name == 'car' else (255, 255, 255)
+
+            # plot box
+            cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+
+            # plot text
+            cv2.rectangle(img, (x1, y1), (x1 + labelSize[0][0] - 1, y1 - labelSize[0][1]), color, cv2.FILLED)  # text background
+            cv2.putText(img, title, (x1, y1), cv2.FONT_HERSHEY_COMPLEX, fontScale, text_color, thickness)
+
+        x, y = 20, 20
+        for label, count in label_count.items():
+            label_name = coco.cats[label]['name']
+            msg = f'# {label_name}: {count}'
+            color = (0, 0, 0) if label_name == 'car' else (255, 255, 255)
+            cv2.rectangle(img, (x, y + 5), (x + 200, y - 11), colors[label], cv2.FILLED)  # text background
+            cv2.putText(img, msg, (x, y), cv2.FONT_HERSHEY_COMPLEX, fontScale, color, thickness)
+
+            y += 11 + 5
+
+        file_name = f'{prefix}_img-id={img_id}.png' if prefix else f'img-id={img_id}.png'
+        save_path = Path(box_save_dir) / file_name
+        cv2.imwrite(str(save_path), img)
+
+
+def plot_tgt_map(
+    tgt_tensors,
+    tgt_res: List[Dict],
+    coco,
+    map_save_dir: Path,
+    img_ids: Optional[List[int]] = None,
+    prefix: Optional[str] = None
+):
+    assert len(tgt_tensors) == len(tgt_res)
+
+    map_save_dir = map_save_dir / prefix
+    if not map_save_dir.exists():
+        map_save_dir.mkdir(parents=True)
+
+    img_ids = img_ids if img_ids is not None else coco.getImgIds()
+
+    for img_id, img_tensor in tgt_tensors.items():
+        tgt_map_out = tgt_res[img_id]
+        # tgt_map_out: {
+        #     target['image_id']: {
+        #        'box_ids': None,
+        #        'box_labels': None,
+        #        'box_xyxy': None,
+        #        'score_map': None,
+        #        'binary_mask': None
+        #    }
+        # }
+
+        if img_id in img_ids:
+            img = img_tensor_to_cv2(img_tensor, normalized=True)
+            img_copy = img.copy()
+
+            box_ids = tgt_map_out['box_ids']
+            labels = tgt_map_out['box_labels']  # (#filtered_box,)
+            boxes = tgt_map_out['box_xyxy']  # (#filtered_box, 4)
+            score_map = tgt_map_out['score_map']  # (#filtered_box, #class, roi_h, roi_w)
+            binary_mask = tgt_map_out['binary_mask']  # (#filtered_box, #class, roi_h, roi_w)
+
+            for box in boxes:
+                x1, y1, x2, y2 = box.int().numpy()
+                cv2.rectangle(img_copy, (x1, y1), (x2, y2), (0, 0, 255), 2)
+            save_path = map_save_dir / f'img-id={img_id}_bbox.png'
+            cv2.imwrite(str(save_path), img_copy)
+
+            fig, axes = plt.subplots(len(boxes), 3)
+            axes = axes[None, :] if axes.ndim == 1 else axes
+            for row_axes, box, label, map, mask in zip(axes, boxes, labels, score_map, binary_mask):
+                x1, y1, x2, y2 = box.int().numpy()
+                x1 = max(x1, 0)
+                y1 = max(y1, 0)
+                crop = img[y1:y2, x1:x2, ::-1]  # (h, w, C)
+
+                row_axes[0].imshow(crop)
+                row_axes[0].set_title(coco.cats[label]['name'])
+                row_axes[0].set_axis_off()
+
+                sns.heatmap(map[label - 1], ax=row_axes[1], square=True)
+                row_axes[1].set_axis_off()
+
+                row_axes[2].imshow(mask[label - 1])
+                row_axes[2].set_axis_off()
+            
+            file_name = f'img-id={img_id}_map.png'
+            save_path = map_save_dir / file_name
+            plt.savefig(str(save_path))
+
+
+def img_tensor_to_cv2(img_tensor: torch.Tensor, normalized: bool = True) -> np.ndarray:
+    """
+    img_tensor: (C, H, W)
+    """
+    assert img_tensor.ndim == 3
+    assert img_tensor.shape[0] == 3
+
+    img = img_tensor.cpu().detach().permute(1, 2, 0).numpy()  # (H, W, C)
+
+    if normalized:
+        mean = np.array([0.485, 0.456, 0.406])
+        std = np.array([0.229, 0.224, 0.225])
+        img = img * std[None, None, -1] + mean[None, None, -1]
+
+    img = np.clip(img * 255, 0, 255).astype(np.uint8)
+    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+    img = img.copy()  # use `copy()` as https://github.com/opencv/opencv/issues/18120
+
+    return img
+
+
+def resize_and_pad(img, target_size: int):
+    if img.ndim == 2:
+        img = img[:, :, None]
+    assert img.ndim == 3
+    assert img.shape[-1] in [1, 3]
+    assert isinstance(target_size, int)
+
+    h, w = img.shape[:2]
+    long_edge = max(h, w)
+    ratio = target_size / long_edge
+
+    new_h = int(h * ratio)
+    new_w = int(w * ratio)
+
+    img = cv2.resize(img, (new_w, new_h))
+
+    res = np.ones((target_size, target_size, 3)) * 255
+    pad = (target_size - min(new_h, new_w)) // 2
+
+    import pdb; pdb.set_trace()
+    if new_h >= new_w:
+        res[:, pad:pad + new_w, :] = img
+    else:
+        res[pad:pad + new_h, :, :] = img
+
+    return res

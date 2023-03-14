@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 import datasets
 import datasets.DAOD as DAOD
 import util.misc as utils
@@ -333,7 +333,7 @@ def main(cfg):
         # check the resumed model
         # if not cfg.EVAL:
         #     test_stats, coco_evaluator = evaluate(
-        #         model, criterion, postprocessors, postprocessors_target, data_loader_val, base_ds, device, cfg.OUTPUT_DIR
+        #         model, criterion, postprocessors, postprocessors_target, data_loader_val, base_ds, device, cfg.OUTPUT_DIR, cfg, plot_bbox=False
         #     )
 
     # TODO: for retraining
@@ -385,9 +385,13 @@ def main(cfg):
         else:
             raise ValueError('missing resume model while finetune is on')
 
+    if cfg.RESUME_MEMORY:
+        m_items_weights = torch.load(cfg.RESUME_MEMORY, map_location='cpu')
+        model_without_ddp.m_items.weight = m_items_weights
+
     if cfg.EVAL:
         test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,postprocessors_target,
-                                              data_loader_val, base_ds, device, cfg.OUTPUT_DIR)
+                                              data_loader_val, base_ds, device, cfg.OUTPUT_DIR, cfg, plot_bbox=cfg.PLOT.PLOT_BBOX, prefix='eval')
         if cfg.OUTPUT_DIR:
             utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
         return
@@ -404,15 +408,15 @@ def main(cfg):
 
     # TODO fix image indixes for visualization
     total_iter = 0 # TODO count total iterations, starting point
-    image_ids = torch.randint(500, 3474, (3,)).tolist() # select image to visualize pseudo labels
-    # image_ids.sort()
+    # image_ids = torch.randint(500, 3474, (3,)).tolist() # select image to visualize pseudo labels
+    # # image_ids.sort()
     
-    lines = ['{}'.format(id) for id in image_ids]
+    # lines = ['{}'.format(id) for id in image_ids]
 
-    with open('current_plot_image_index.txt', 'w') as f:
-        for line in lines:
-            f.write(line)
-            f.write('\n')
+    # with open('current_plot_image_index.txt', 'w') as f:
+    #     for line in lines:
+    #         f.write(line)
+    #         f.write('\n')
 
     for epoch in range(START_EPOCH, cfg.TRAIN.EPOCHS):
         if cfg.DIST.DISTRIBUTED:
@@ -423,13 +427,15 @@ def main(cfg):
         if cfg.ACCUMULATE_STATS:
             train_stats, probs = train_one_epoch(
                 model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS, cur_epoch,
-                base_ds, postprocessors, postprocessors_target, image_ids, cfg.TRAIN.CLIP_MAX_NORM)
+                base_ds, postprocessors, postprocessors_target, image_ids, cfg.TRAIN.CLIP_MAX_NORM, cfg=cfg,
+                plot_bbox=cfg.PLOT.PLOT_BBOX, plot_map=cfg.PLOT.PLOT_MAP, prefix=f'train_epoch={epoch}')
         
         else:
             # prototypes storing dict
             train_stats, thresh_stats, outputs = train_one_epoch(
                 model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS, total_iter,
-                base_ds, postprocessors, postprocessors_target, image_ids, cfg.TRAIN.CLIP_MAX_NORM)
+                base_ds, postprocessors, postprocessors_target, None, cfg.TRAIN.CLIP_MAX_NORM,
+                cfg=cfg, plot_bbox=cfg.PLOT.PLOT_BBOX, plot_map=cfg.PLOT.PLOT_MAP, prefix=f'train_epoch={epoch}')
             
         if 'thresh_change_occurence' in outputs:
             (output_dir / 'thresh_change_occurence').mkdir(exist_ok=True)
@@ -463,7 +469,7 @@ def main(cfg):
                 }, checkpoint_path)
 
         test_stats, coco_evaluator = evaluate(
-            model, criterion, postprocessors, postprocessors_target, data_loader_val, base_ds, device, cfg.OUTPUT_DIR
+            model, criterion, postprocessors, postprocessors_target, data_loader_val, base_ds, device, cfg.OUTPUT_DIR, cfg, plot_bbox=True, prefix=f'eval_epoch={epoch}'
         )
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},

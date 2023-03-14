@@ -15,9 +15,10 @@ import math
 import torchvision
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
-from torch import nn, Tensor
 from torch.nn.init import xavier_uniform_, constant_, uniform_, normal_
+from torch.utils.checkpoint import checkpoint
 
 from util.misc import inverse_sigmoid
 from models.ops.modules import MSDeformAttn
@@ -262,11 +263,7 @@ class DeformableTransformer(nn.Module):
         if self.two_stage:
             return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact, da_output
 
-        # return hs, init_reference_out, inter_references_out, None, None, da_output, query_embed
-
-        # TODO return query_embed for cascade arch
-        # return hs, init_reference_out, inter_references_out, None, None, da_output, query_embed
-        return hs, memory, init_reference_out, inter_references_out, None, None, da_output
+        return hs, memory, init_reference_out, inter_references_out, None, None, da_output, level_start_index
 
     def forward_supp_branch(self, srcs, masks, pos_embeds, query_embed, support_boxes, scale=1):
         assert query_embed is not None
@@ -353,10 +350,23 @@ class DeformableTransformerEncoderLayer(nn.Module):
         return tensor if pos is None else tensor + pos
 
     def forward_ffn(self, src):
-        src2 = self.linear2(self.dropout2(self.activation(self.linear1(src))))
-        src = src + self.dropout3(src2)
-        src = self.norm2(src)
-        return src
+        if src.requires_grad:
+            def ffn_1(src):
+                return self.activation(self.linear1(src))
+            def ffn_2(src2):
+                return self.linear2(src2)
+
+            src2 = checkpoint(ffn_1, src)
+            src2 = self.dropout2(src2)
+            src2 = checkpoint(ffn_2, src2)
+            src = src + self.dropout3(src2)
+            src = self.norm2(src)
+            return src
+        else:
+            src2 = self.linear2(self.dropout2(self.activation(self.linear1(src))))
+            src = src + self.dropout3(src2)
+            src = self.norm2(src)
+            return src
     
     # src will be updated in the i+1 layer
     def forward(self, src, space_query, channel_query, pos, reference_points, spatial_shapes, level_start_index, padding_mask=None):
@@ -510,6 +520,8 @@ class DeformableTransformerEncoder(nn.Module):
             )
             category_codes.append(category_code)
         return category_codes
+
+
 class DeformableTransformerDecoderLayer(nn.Module):
     def __init__(self, d_model=256, d_ffn=1024,
                  dropout=0.1, activation="relu",
@@ -544,11 +556,23 @@ class DeformableTransformerDecoderLayer(nn.Module):
         return tensor if pos is None else tensor + pos
 
     def forward_ffn(self, tgt):
-        # import pdb; pdb.set_trace()
-        tgt2 = self.linear2(self.dropout3(self.activation(self.linear1(tgt))))
-        tgt = tgt + self.dropout4(tgt2)
-        tgt = self.norm3(tgt)
-        return tgt
+        if tgt.requires_grad:
+            def ffn_1(tgt):
+                return self.activation(self.linear1(tgt))
+            def ffn_2(tgt2):
+                return self.linear2(tgt2)
+            
+            tgt2 = checkpoint(ffn_1, tgt)
+            tgt2 = self.dropout3(tgt2)
+            tgt2 = checkpoint(ffn_2, tgt2)
+            tgt = tgt + self.dropout4(tgt2)
+            tgt = self.norm3(tgt)
+            return tgt
+        else:
+            tgt2 = self.linear2(self.dropout3(self.activation(self.linear1(tgt))))
+            tgt = tgt + self.dropout4(tgt2)
+            tgt = self.norm3(tgt)
+            return tgt
 
     def forward(self, tgt, instance_query, query_pos, reference_points, src, src_spatial_shapes, level_start_index, src_padding_mask=None):
         # self attention
