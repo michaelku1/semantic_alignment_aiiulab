@@ -24,7 +24,7 @@ import util.misc as utils
 from datasets.coco_eval import CocoEvaluator
 from datasets.panoptic_eval import PanopticEvaluator
 from datasets.data_prefetcher import data_prefetcher
-from util.box_ops import plot_bbox
+from util.plot_utils import plot_bbox
 
 
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
