@@ -10,7 +10,7 @@
 # ------------------------------------------------------------------------
 
 """
-Deformable DETR model and criterion classes.
+Deformable DETR model and criterion classes
 """
 import torch
 import torch.nn.functional as F
@@ -26,7 +26,8 @@ from .backbone import build_backbone
 from .matcher import build_matcher
 from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
-from .deformable_transformer import build_deforamble_transformer
+# from .deformable_transformer import build_deforamble_transformer
+from .deformable_transformer_ckp import build_deforamble_transformer
 from .utils import GradientReversal
 import copy
 
@@ -52,14 +53,14 @@ class DeformableDETR(nn.Module):
             two_stage: two-stage Deformable DETR
         """
         super().__init__()
-        self.num_queries = num_queries
+        self.num_queries = num_queries  # 300
         self.transformer = transformer
-        hidden_dim = transformer.d_model
+        hidden_dim = transformer.d_model  # 256
         self.class_embed = nn.Linear(hidden_dim, num_classes)
-        self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)
+        self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)  # output_dim = 4, #layer = 3
         self.num_feature_levels = num_feature_levels
         if not two_stage:
-            self.query_embed = nn.Embedding(num_queries, hidden_dim*2)
+            self.query_embed = nn.Embedding(num_queries, hidden_dim * 2)
         if num_feature_levels > 1:
             num_backbone_outs = len(backbone.strides)
             input_proj_list = []
@@ -103,9 +104,9 @@ class DeformableDETR(nn.Module):
 
         # if two-stage, the last class_embed and bbox_embed is for region proposal generation
         num_pred = (transformer.decoder.num_layers + 1) if two_stage else transformer.decoder.num_layers
-        if with_box_refine:
-            self.class_embed = _get_clones(self.class_embed, num_pred)
-            self.bbox_embed = _get_clones(self.bbox_embed, num_pred)
+        if with_box_refine:  # True from cfg
+            self.class_embed = _get_clones(self.class_embed, num_pred)  # ModuleList[Linear] * 6
+            self.bbox_embed = _get_clones(self.bbox_embed, num_pred)  # ModuleList[Linear] * 6
             nn.init.constant_(self.bbox_embed[0].layers[-1].bias.data[2:], -2.0)
             # hack implementation for iterative bounding box refinement
             self.transformer.decoder.bbox_embed = self.bbox_embed
@@ -142,8 +143,8 @@ class DeformableDETR(nn.Module):
                 nn.init.constant_(layer.bias, 0)
 
     def forward(self, samples: NestedTensor):
-        """ The forward expects a NestedTensor, which consists of:
-               - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
+        """ The forward expects a NestedTensor, which consists of:
+               - samples.tensors: batched images, of shape [batch_size x 3 x H x W]
                - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
 
             It returns a dict with the following elements:
@@ -158,43 +159,82 @@ class DeformableDETR(nn.Module):
         """
         if not isinstance(samples, NestedTensor):
             samples = nested_tensor_from_tensor_list(samples)
-        features, pos = self.backbone(samples)
+        # samples.tensors: (N, C, H, W)
+        # samples.mask: (N ,H, W)
+        
+        features, pos = self.backbone(samples)  # features size are different
+        # features: [nested_tensor_0, nested_tensor_1, nested_tensor_2]
+        #     features[0].tensors: (2,  512, 84, 167)
+        #     features[1].tensors: (2, 1024, 42,  84)
+        #     features[2].tensors: (2, 2048, 21,  42)
+        # pos: [pos_emb_tensor_0, pos_emb_tensor_1, pos_emb_tensor_2]
+        #     pos[0]: (2, 256, 84, 167)
+        #     pos[1]: (2, 256, 42,  84)
+        #     pos[2]: (2, 256, 21,  42)
 
         srcs = []
         masks = []
-        for l, feat in enumerate(features):
+        for l, feat in enumerate(features):  # different layer features
             src, mask = feat.decompose()
-            srcs.append(self.input_proj[l](src))
+            srcs.append(self.input_proj[l](src))  # feat after linear_proj (channel → 256)
+            # srcs[0]: (2, 256, 84, 167)
+            # srcs[1]: (2, 256, 42,  84)
+            # srcs[2]: (2, 256, 21,  42)
             masks.append(mask)
             assert mask is not None
+
         if self.num_feature_levels > len(srcs):
             _len_srcs = len(srcs)
             for l in range(_len_srcs, self.num_feature_levels):
                 if l == _len_srcs:
-                    src = self.input_proj[l](features[-1].tensors)
+                    src = self.input_proj[l](features[-1].tensors)  # (2, 2048, 21,  42) -> (2, 256, 11, 21)
                 else:
                     src = self.input_proj[l](srcs[-1])
                 m = samples.mask
                 mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
+
                 pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
+
                 srcs.append(src)
+                # srcs[0]: (2, 256, 84, 167)
+                # srcs[1]: (2, 256, 42,  84)
+                # srcs[2]: (2, 256, 21,  42)
+                # srcs[3]: (2, 256, 11,  21)
                 masks.append(mask)
+                # masks[0]: (2, 84, 167)
+                # masks[1]: (2, 42,  84)
+                # masks[2]: (2, 21,  42)
+                # masks[3]: (2, 11,  21)
                 pos.append(pos_l)
+                # pos[0]: (2, 256, 84, 167)
+                # pos[1]: (2, 256, 42,  84)
+                # pos[2]: (2, 256, 21,  42)
+                # pos[3]: (2, 256, 11,  21)
 
         query_embeds = None
         if not self.two_stage:
-            query_embeds = self.query_embed.weight
+            query_embeds = self.query_embed.weight  # (300, 512)
+
         hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output = self.transformer(srcs, masks, pos, query_embeds)
+        # hs: (#decoder_layer, N, #query, d_model), object query tensor outputed from decoder
+        # init_reference: (N, #query, 2), initially predicted reference point coordinates by the small network `DeformableTransformer.reference_points`
+        # inter_references: (#decoder_layer, N, #query, 4), predicted box coordinates from decoder
+        # da_output: {
+        #     'space_query': (N, #encoder_layers, d_model),
+        #     'channel_query': (?, #encoder_layers, d_model),
+        #     'instance_query': (N, 1, d_model)
+        # }
 
         outputs_classes = []
         outputs_coords = []
+        # predict coordinate_offset (tmp)
         for lvl in range(hs.shape[0]):
             if lvl == 0:
                 reference = init_reference
             else:
                 reference = inter_references[lvl - 1]
             reference = inverse_sigmoid(reference)
-            outputs_class = self.class_embed[lvl](hs[lvl])
+            outputs_class = self.class_embed[lvl](hs[lvl])  # predict class
             tmp = self.bbox_embed[lvl](hs[lvl])
             if reference.shape[-1] == 4:
                 tmp += reference
@@ -209,19 +249,22 @@ class DeformableDETR(nn.Module):
 
         if self.training and self.uda:
             B = outputs_class.shape[1]
-            outputs_class = outputs_class[:, :B//2]
-            outputs_coord = outputs_coord[:, :B//2]
+
+            # only take source img to train(confident, bbox)
+            outputs_class = outputs_class[:, :B // 2]
+            outputs_coord = outputs_coord[:, :B // 2]
+            
             if self.two_stage:
-                enc_outputs_class = enc_outputs_class[:B//2]
-                enc_outputs_coord_unact = enc_outputs_coord_unact[:B//2]
+                enc_outputs_class = enc_outputs_class[:B // 2]
+                enc_outputs_coord_unact = enc_outputs_coord_unact[:B // 2]
             if self.backbone_align:
                 da_output['backbone'] = torch.cat([self.backbone_D(self.grl(src.flatten(2).transpose(1, 2))) for src in srcs], dim=1)
             if self.space_align:
-                da_output['space_query'] = self.space_D(da_output['space_query'])
+                da_output['space_query'] = self.space_D(da_output['space_query'])  # (N, #encoder_layers, 1)
             if self.channel_align:
-                da_output['channel_query'] = self.channel_D(da_output['channel_query'])
+                da_output['channel_query'] = self.channel_D(da_output['channel_query'])  # (?, #encoder_layers, 1)
             if self.instance_align:
-                da_output['instance_query'] = self.instance_D(da_output['instance_query'])
+                da_output['instance_query'] = self.instance_D(da_output['instance_query'])  # (N, 1, 1)
 
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
         if self.aux_loss:
@@ -245,6 +288,7 @@ class DeformableDETR(nn.Module):
                 for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
 
 
+# define new loss function here
 class SetCriterion(nn.Module):
     """ This class computes the loss for DETR.
     The process happens in two steps:
@@ -285,7 +329,7 @@ class SetCriterion(nn.Module):
                                             dtype=src_logits.dtype, layout=src_logits.layout, device=src_logits.device)
         target_classes_onehot.scatter_(2, target_classes.unsqueeze(-1), 1)
 
-        target_classes_onehot = target_classes_onehot[:,:,:-1]
+        target_classes_onehot = target_classes_onehot[:, :, :-1]
         loss_ce = sigmoid_focal_loss(src_logits, target_classes_onehot, num_boxes, alpha=self.focal_alpha, gamma=2) * src_logits.shape[1]
         losses = {'loss_ce': loss_ce}
 
@@ -363,8 +407,8 @@ class SetCriterion(nn.Module):
         assert B % 2 == 0
 
         targets = torch.empty_like(outputs)
-        targets[:B//2] = 0
-        targets[B//2:] = 1
+        targets[:B // 2] = 0
+        targets[B // 2:] = 1
 
         loss = F.binary_cross_entropy_with_logits(outputs, targets, reduction='none')
 
@@ -425,7 +469,7 @@ class SetCriterion(nn.Module):
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if 'aux_outputs' in outputs:
             for i, aux_outputs in enumerate(outputs['aux_outputs']):
-                indices = self.matcher(aux_outputs, targets)
+                indices = self.matcher(aux_outputs, targets)  # matcher = matching algorithm(hug) #indices = object_queries and groundtruth index : pairs
                 for loss in self.losses:
                     if loss == 'masks':
                         # Intermediate masks losses are too costly to compute, we ignore them.
@@ -438,6 +482,7 @@ class SetCriterion(nn.Module):
                     l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
 
+        # We don't need this(Two stage)
         if 'enc_outputs' in outputs:
             enc_outputs = outputs['enc_outputs']
             bin_targets = copy.deepcopy(targets)
@@ -453,7 +498,7 @@ class SetCriterion(nn.Module):
                     # Logging is enabled only for the last layer
                     kwargs['log'] = False
                 l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
-                l_dict = {k + f'_enc': v for k, v in l_dict.items()}
+                l_dict = {k + '_enc': v for k, v in l_dict.items()}
                 losses.update(l_dict)
 
         if 'da_output' in outputs:
@@ -463,7 +508,7 @@ class SetCriterion(nn.Module):
         return losses
 
 
-class PostProcess(nn.Module):
+class PostProcess(nn.Module):  # only use in eval
     """ This module converts the model's output into the format expected by the coco api"""
 
     @torch.no_grad()
@@ -475,24 +520,41 @@ class PostProcess(nn.Module):
                           For evaluation, this must be the original image size (before any data augmentation)
                           For visualization, this should be the image size after data augment, but before padding
         """
+        # outputs: {
+        #     'pred_logits': torch.FloatTensor(),  # (bz, 300, 9)
+        #     'pred_boxes': torch.FloatTensor(),  # (bz, 300, 4), 0 < coordinate < 1
+        #     'aux_outputs': [
+        #         {'pred_logits': torch.FloatTensor(), 'pred_boxes': torch.FloatTensor()},
+        #         {'pred_logits': torch.FloatTensor(), 'pred_boxes': torch.FloatTensor()},
+        #         {'pred_logits': torch.FloatTensor(), 'pred_boxes': torch.FloatTensor()},
+        #         {'pred_logits': torch.FloatTensor(), 'pred_boxes': torch.FloatTensor()},
+        #         {'pred_logits': torch.FloatTensor(), 'pred_boxes': torch.FloatTensor()},
+        #     ]
+        # }
+        # target_sizes: tensor([[1024, 2048], [1024, 2048]], device='cuda:0')
+
         out_logits, out_bbox = outputs['pred_logits'], outputs['pred_boxes']
 
         assert len(out_logits) == len(target_sizes)
         assert target_sizes.shape[1] == 2
 
-        prob = out_logits.sigmoid()
-        topk_values, topk_indexes = torch.topk(prob.view(out_logits.shape[0], -1), 100, dim=1)
-        scores = topk_values
-        topk_boxes = topk_indexes // out_logits.shape[2]
-        labels = topk_indexes % out_logits.shape[2]
-        boxes = box_ops.box_cxcywh_to_xyxy(out_bbox)
-        boxes = torch.gather(boxes, 1, topk_boxes.unsqueeze(-1).repeat(1,1,4))
+        prob = out_logits.sigmoid()  # (bz, 300, 9), #boxes=300, #classes=9
+        # select 100 boxes with high probability in some class 
+        topk_values, topk_indexes = torch.topk(prob.view(out_logits.shape[0], -1), 100, dim=1)  # (bz, 100), (bz, 100)
+        scores = topk_values  # (bz, 100)
+        topk_boxes = topk_indexes // out_logits.shape[2]  # (bz, 100), topk_indexes // 9
+        labels = topk_indexes % out_logits.shape[2]  # (bz, 100), topk_indexes % 9
+        boxes = box_ops.box_cxcywh_to_xyxy(out_bbox)  # (bz, 300, 4)
+        boxes = torch.gather(boxes, 1, topk_boxes.unsqueeze(-1).repeat(1, 1, 4))  # (bz, 100, 4)
 
         # and from relative [0, 1] to absolute [0, height] coordinates
-        img_h, img_w = target_sizes.unbind(1)
-        scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1)
+        img_h, img_w = target_sizes.unbind(1)  # tensor([1024, 1024], device='cuda:0'), tensor([2048, 2048], device='cuda:0')
+        scale_fct = torch.stack([img_w, img_h, img_w, img_h], dim=1)  # tensor([[2048, 1024, 2048, 1024], [2048, 1024, 2048, 1024]], device='cuda:0')
         boxes = boxes * scale_fct[:, None, :]
 
+        # `scores` is the highest probability in the class `labels`
+        # `labels` is the class
+        # `boxes` is the xyxy corrdinates of the box
         results = [{'scores': s, 'labels': l, 'boxes': b} for s, l, b in zip(scores, labels, boxes)]
 
         return results
@@ -502,14 +564,19 @@ class MLP(nn.Module):
     """ Very simple multi-layer perceptron (also called FFN)"""
 
     def __init__(self, input_dim, hidden_dim, output_dim, num_layers):
+
         super().__init__()
         self.num_layers = num_layers
         h = [hidden_dim] * (num_layers - 1)
         self.layers = nn.ModuleList(nn.Linear(n, k) for n, k in zip([input_dim] + h, h + [output_dim]))
 
     def forward(self, x):
-        for i, layer in enumerate(self.layers):
-            x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
+        def mlp(x):
+            for i, layer in enumerate(self.layers):
+                x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
+            return x
+        
+        x = torch.utils.checkpoint.checkpoint(mlp, x)
         return x
 
 
@@ -546,9 +613,11 @@ def build(cfg):
         aux_weight_dict = {}
         for i in range(cfg.MODEL.DEC_LAYERS - 1):
             aux_weight_dict.update({k + f'_{i}': v for k, v in weight_dict.items()})
-        aux_weight_dict.update({k + f'_enc': v for k, v in weight_dict.items()})
+        aux_weight_dict.update({k + '_enc': v for k, v in weight_dict.items()})
         weight_dict.update(aux_weight_dict)
 
+    # important
+    # we have to add new loss_weight at here
     weight_dict['loss_backbone'] = cfg.LOSS.BACKBONE_LOSS_COEF
     weight_dict['loss_space_query'] = cfg.LOSS.SPACE_QUERY_LOSS_COEF
     weight_dict['loss_channel_query'] = cfg.LOSS.CHANNEL_QUERY_LOSS_COEF
