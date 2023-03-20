@@ -267,8 +267,6 @@ class DeformableDETR(nn.Module):
             if self.instance_align:
                 da_output['instance_query'] = self.instance_D(da_output['instance_query'])  # (N, 1, 1)
 
-            import pdb; pdb.set_trace()
-
         out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
