@@ -38,7 +38,7 @@ def remove_mask_and_warp(src, pos, padding_mask, level_start_index, spatial_shap
         p = pos[:, start:start+H*W].view(B, H, W, C).permute(0, 3, 1, 2)  # (B, C, H, W)
         m = padding_mask[:, start:start+H*W].view(B, H, W)  # (B, H, W)
 
-        not_m = ~m｀
+        not_m = ~m
         real_H = not_m.sum(1).max(1).values
         real_W = not_m.sum(2).max(1).values
 
