@@ -12,12 +12,16 @@
 """
 Plotting utilities to visualize training logs.
 """
-import torch
+import cv2
+import numpy as np
 import pandas as pd
+from pathlib import Path
+from typing import Dict, List, Optional
+
 import seaborn as sns
 import matplotlib.pyplot as plt
 
-from pathlib import Path, PurePath
+import torch
 
 
 def plot_logs(logs, fields=('class_error', 'loss_bbox_unscaled', 'mAP'), ewm_col=0, log_name='log.txt'):
@@ -39,7 +43,7 @@ def plot_logs(logs, fields=('class_error', 'loss_bbox_unscaled', 'mAP'), ewm_col
     # convert single Path to list to avoid 'not iterable' error
 
     if not isinstance(logs, list):
-        if isinstance(logs, PurePath):
+        if isinstance(logs, Path):
             logs = [logs]
             print(f"{func_name} info: logs param expects a list argument, converted to list[Path].")
         else:
@@ -48,7 +52,7 @@ def plot_logs(logs, fields=('class_error', 'loss_bbox_unscaled', 'mAP'), ewm_col
 
     # verify valid dir(s) and that every item in list is Path object
     for i, dir in enumerate(logs):
-        if not isinstance(dir, PurePath):
+        if not isinstance(dir, Path):
             raise ValueError(f"{func_name} - non-Path object in logs argument of {type(dir)}: \n{dir}")
         if dir.exists():
             continue
@@ -110,4 +114,78 @@ def plot_precision_recall(files, naming_scheme='iter'):
     return fig, axs
 
 
+def plot_bbox(
+    coco,
+    res: Dict,
+    root_dir: Path,
+    box_save_dir: str,
+    score_threshold: int = 0.5,
+    img_ids: Optional[List[int]] = None,
+    prefix: Optional[str] = None
+):
+    box_save_dir = Path(box_save_dir)
+    if not box_save_dir.exists():
+        box_save_dir.mkdir(parents=True, exist_ok=True)
+
+    img_ids = img_ids if img_ids is not None else coco.getImgIds()
+
+    # BGR colors for all categories
+    colors = [
+        (47, 52, 227),
+        (63, 153, 246),
+        (74, 237, 255),
+        (114, 193, 56),
+        (181, 192, 77),
+        (220, 144, 52),
+        (205, 116, 101),
+        (226, 97, 149),
+        (155, 109, 246),
+    ]
+
+    fontFace = cv2.FONT_HERSHEY_COMPLEX
+    fontScale = 0.5
+    thickness = 1
+
+    for img_id, output in res.items():
+        if img_id not in img_ids:
+            continue
+        
+        info = coco.loadImgs(img_id)[0]
+        img_path = root_dir / info['file_name']
+        img = cv2.imread(str(img_path))
+
+        label_count = {i: 0 for i in range(1, 9)}
+        for score, label, box in zip(output['scores'], output['labels'], output['boxes']):
+            if score < score_threshold:
+                continue
+
+            label_name = coco.cats[label.item()]['name']
+            title = f'{label_name}({score.item():.3f})'
+            label_count[label.item()] += 1
+
+            x1, y1, x2, y2 = np.round(box.cpu().numpy()).astype(np.int)
+
+            labelSize = cv2.getTextSize(title, fontFace, fontScale, thickness)
+            color = colors[label.item()]
+
+            # plot box
+            cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+
+            # plot text
+            cv2.rectangle(img, (x1, y1), (x1 + labelSize[0][0] - 1, y1 - labelSize[0][1]), color, cv2.FILLED)  # text background
+            cv2.putText(img, title, (x1, y1), cv2.FONT_HERSHEY_COMPLEX, fontScale, (255, 255, 255), thickness)
+
+        x, y = 20, 20
+        for label, count in label_count.items():
+            label_name = coco.cats[label]['name']
+            msg = f'# {label_name}: {count}'
+
+            cv2.rectangle(img, (x, y + 5), (x + 200, y - 11), colors[label], cv2.FILLED)  # text background
+            cv2.putText(img, msg, (x, y), cv2.FONT_HERSHEY_COMPLEX, fontScale, (255, 255, 255), thickness)
+
+            y += 11 + 5
+
+        file_name = f'{prefix}_img-id={img_id}.png' if prefix else f'img-id={img_id}.png'
+        save_path = Path(box_save_dir) / file_name
+        cv2.imwrite(str(save_path), img)
 
