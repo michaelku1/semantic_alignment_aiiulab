@@ -254,7 +254,6 @@ class DeformableTransformer(nn.Module):
             instance_query = self.instance_query.expand(tgt.shape[0], -1, -1)  # (N, 1, d_model)
 
         # decoder
-        import pdb; pdb.set_trace()
         hs, inter_references, instance_query = self.decoder(
             tgt, instance_query, reference_points, memory, spatial_shapes, level_start_index, valid_ratios, query_embed, mask_flatten
         )
@@ -339,9 +338,9 @@ class DeformableTransformerEncoderLayer(nn.Module):
             return self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
         src2 = checkpoint(sa, src, pos, reference_points, spatial_shapes, level_start_index, padding_mask)
         
-        self_attn: q: src, k: src, v: src
-        self_attn: q: src, k: [src, source_domain_token, target_domain_token], v: [src, source_domain_token, target_domain_token]
-                attn_w * src + attn_w * source_domain_token + attn_w * target_domain_token
+        # self_attn: q: src, k: src, v: src
+        # self_attn: q: src, k: [src, source_domain_token, target_domain_token], v: [src, source_domain_token, target_domain_token]
+        #         attn_w * src + attn_w * source_domain_token + attn_w * target_domain_token
                 
         src = src + self.dropout1(src2)
         src = self.norm1(src)
