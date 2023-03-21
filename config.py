@@ -122,8 +122,13 @@ _C.LOSS.CHANNEL_QUERY_LOSS_COEF = 0.1
 _C.LOSS.INSTANCE_QUERY_LOSS_COEF = 0.1
 _C.LOSS.CATEGORY_QUERY_LOSS_COEF = 0.1
 _C.LOSS.MARGIN = 1
-_C.LOSS.INTER_CLASS_COEF = 1.
+
+# TODO for current implem.
+_C.LOSS.INTER_CLASS_COEF = 0.1
 _C.LOSS.INTRA_CLASS_COEF = 1.
+_C.LOSS.BG_LOSS_COEF = 0.1
+
+_C.LOSS.CATEGORY_TOKEN_LOSS_COEF = 1.
 
 # multi class
 _C.LOSS.MULTI_CLASS_COEF = 0.01
@@ -194,6 +199,7 @@ _C.EMA = False
 _C.FEAT_AUG = False
 _C.ACCUMULATE_STATS = False
 _C.CONTRASTIVE = False
+_C.CAM_VIZ = False
 
 # ------------------------------------------------------------------------
 # Plot box
