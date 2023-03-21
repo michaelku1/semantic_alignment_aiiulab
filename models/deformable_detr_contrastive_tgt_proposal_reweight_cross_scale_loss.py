@@ -38,11 +38,11 @@ from .deformable_transformer_contrastive import build_deforamble_transformer
 from .utils import GradientReversal, FCDiscriminator
 import copy
 from .memory_ema import Memory
-from .utils import compute_CV, weighted_aggregate, weighted_aggregate_tmp, find_thresh, attention_module_multi_head
+from .utils import compute_CV, weighted_aggregate, weighted_aggregate_tmp, find_thresh  # , attention_module_multi_head
 
-from .debug_tools import *
+# from .debug_tools import *
 
-from .deformable_transformer_contrastive import TransformerEncoder, TransformerEncoderLayer
+# from .deformable_transformer_contrastive import TransformerEncoder, TransformerEncoderLayer
 
 def _get_clones(module, N):
     return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
@@ -262,7 +262,8 @@ class DeformableDETR(nn.Module):
             hs, memory, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output, query_pos, encoder_feat_info = self.transformer(srcs, masks, pos, query_embeds)
         else:
             # tracemalloc.start()
-            hs, memory, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output, query_pos, encoder_feat_info = self.transformer(srcs, masks, pos, query_embeds)
+            hs, memory, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output = self.transformer(srcs, masks, pos, query_embeds)
+            # hs, memory, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output, query_pos, encoder_feat_info = self.transformer(srcs, masks, pos, query_embeds)
             # print(tracemalloc.get_traced_memory())
         
         # breakpoint()
@@ -542,8 +543,8 @@ class DeformableDETR(nn.Module):
             # biased_src_prototypes = lambda_a*src_prototypes_enc + (1-lambda_a)*domain_bias
 
             # for detr transformer 
-            src_flatten, level_start_index, valid_ratios, \
-            lvl_pos_embed_flatten, mask_flatten = encoder_feat_info.items()
+            # src_flatten, level_start_index, valid_ratios, \
+            # lvl_pos_embed_flatten, mask_flatten = encoder_feat_info.items()
 
             list_of_weighted_tgt_rois_final = [] # [scale, bs] (num_rois, 1, feat_dim)
             list_of_weighted_tgt_rois_bg_final = []
@@ -562,9 +563,17 @@ class DeformableDETR(nn.Module):
                     thresh_mask = 0.8
                                         
                     scores = F.conv2d(rois_target, filters).sigmoid() # (num_rois, num_classes, 7, 7)
-                    binary_masks = torch.where(scores>thresh_mask, 1, 0) # (num_rois, num_classes, 7, 7)
+                    binary_masks = torch.where(
+                        scores > thresh_mask,
+                        torch.tensor(1).to(scores.device),
+                        torch.tensor(0).to(scores.device)
+                    ) # (num_rois, num_classes, 7, 7)
                     # background prototype
-                    binary_masks_bg = torch.where(scores<thresh_mask, 1, 0)
+                    binary_masks_bg = torch.where(
+                        scores < thresh_mask,
+                        torch.tensor(1).to(scores.device),
+                        torch.tensor(0).to(scores.device)
+                    )
 
                     # torch.save(output_tensor, f'./visualization/output_tensor/output_tensor_{iter_i}.pt')
                     # torch.save(binary_masks, f'./visualization/binary_masks/binary_masks_{iter_i}.pt')
@@ -1267,6 +1276,7 @@ class SetCriterion(nn.Module):
         # for scale_i in range(source.shape[0]):
 
         # TODO try first and second last layer features 
+        import pdb; pdb.set_trace()
         source_prototypes = torch.index_select(source, 0, torch.tensor([0,2]).cuda())
         target_prototypes = torch.index_select(target, 0, torch.tensor([0,2]).cuda())
 

@@ -23,7 +23,7 @@ from torch.utils.checkpoint import checkpoint
 from util.misc import inverse_sigmoid
 from models.ops.modules import MSDeformAttn
 # TODO: use category_feature_attention to get category specific encoder features before learning the query token
-from models.utils import DomainAttention, GradientReversal, remove_mask_and_warp, category_feature_attention
+from models.utils import DomainAttention, GradientReversal, remove_mask_and_warp
 # TODO: siamese attention
 # from models.attention import SingleHeadSiameseAttention
 
@@ -263,7 +263,7 @@ class DeformableTransformer(nn.Module):
         if self.two_stage:
             return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact, da_output
 
-        return hs, memory, init_reference_out, inter_references_out, None, None, da_output, level_start_index
+        return hs, memory, init_reference_out, inter_references_out, None, None, da_output
 
     def forward_supp_branch(self, srcs, masks, pos_embeds, query_embed, support_boxes, scale=1):
         assert query_embed is not None
