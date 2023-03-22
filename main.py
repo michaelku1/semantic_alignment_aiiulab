@@ -26,7 +26,7 @@ import datasets.DAOD as DAOD
 import util.misc as utils
 import datasets.samplers as samplers
 from datasets import build_dataset, get_coco_api_from_dataset
-from engine import evaluate, train_one_epoch
+from engine import evaluate, train_one_epoch, check_boxes
 from models import build_model
 from config import get_cfg_defaults
 
@@ -114,6 +114,8 @@ def main(cfg):
         data_loader_train = DataLoader(dataset_train, batch_sampler=batch_sampler_train,
                                        collate_fn=DAOD.collate_fn, num_workers=cfg.NUM_WORKERS,
                                        pin_memory=True)
+        
+
     else:
         batch_sampler_train = torch.utils.data.BatchSampler(sampler_train, cfg.TRAIN.BATCH_SIZE, drop_last=True)
 
@@ -284,12 +286,16 @@ def main(cfg):
     else:
         base_ds = get_coco_api_from_dataset(dataset_val)
 
+
+    # NOTE only parameters in model_without_ddp can be modified (e.g parameter groups), but the actual model being passed
+    # to the training loop is the one initialised with ddp
     if cfg.MODEL.FROZEN_WEIGHTS is not None:
         checkpoint = torch.load(cfg.MODEL.FROZEN_WEIGHTS, map_location='cpu')
         model_without_ddp.detr.load_state_dict(checkpoint['model'])
 
     output_dir = Path(cfg.OUTPUT_DIR)
 
+    # resume training 
     if cfg.RESUME and not cfg.FINETUNE: # [BUG] write after freezing cfgs
         if cfg.RESUME.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
@@ -305,14 +311,15 @@ def main(cfg):
 
         if not cfg.EVAL and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
             import copy
+
+            # copy initialised param group
             p_groups = copy.deepcopy(optimizer.param_groups)
 
-            # pg_old here stands for the initialised optimizer above
             optimizer.load_state_dict(checkpoint['optimizer'])
 
-            # after loading state_dict, the chockpointed value is loaded
+            # # pg_old here stands for the initialised optimizer above
             for pg, pg_old in zip(optimizer.param_groups, p_groups):
-                pg['lr'] = pg_old['lr']
+                pg['lr'] = pg_old['lr'] # replace checkpoint lr with new lr
                 pg['initial_lr'] = pg_old['initial_lr']
 
             print(optimizer.param_groups)
@@ -333,7 +340,7 @@ def main(cfg):
         #         model, criterion, postprocessors, postprocessors_target, data_loader_val, base_ds, device, cfg.OUTPUT_DIR
         #     )
 
-    # TODO: for retraining
+    # resume for fine-tuning
     elif cfg.FINETUNE and cfg.RESUME:
         if cfg.RESUME.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
@@ -382,6 +389,7 @@ def main(cfg):
         else:
             raise ValueError('missing resume model while finetune is on')
 
+    # eval only
     if cfg.EVAL:
         test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,postprocessors_target,
                                               data_loader_val, base_ds, device, cfg.OUTPUT_DIR)
@@ -389,20 +397,27 @@ def main(cfg):
             utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
         return
 
-    # if resume training, local variable START_EPOCH is created
+    # if resume training, START_EPOCH is loaded from checkpoint
     if cfg.RESUME:
         pass
     else:
-        # else create a local variable
+        # else START_EPOCH set from 0
         START_EPOCH = 0
+
 
     print("Start training")
     start_time = time.time()
 
-    # TODO fix image indixes for visualization
-    total_iter = 0 # TODO count total iterations, starting point
-    image_ids = torch.randint(500, 3474, (3,)).tolist() # select image to visualize pseudo labels
+    num_images_for_viz = 20
+    image_id_min = 500
+    image_id_max = 3474
+    # fix image indics for visualization
+    image_ids = torch.randint(image_id_min, image_id_max, (num_images_for_viz,)).tolist() # select image to visualize pseudo labels
     # image_ids.sort()
+
+    # make directory for storing preds
+    (output_dir / 'store_pred').mkdir(exist_ok=True)
+    store_path = (output_dir / 'store_pred')
     
     lines = ['{}'.format(id) for id in image_ids]
 
@@ -411,28 +426,40 @@ def main(cfg):
             f.write(line)
             f.write('\n')
 
+    # temporarily unused var
+    total_iter = 0
+
+    if cfg.RESUME and cfg.DEBUG and cfg.CHECK_BOXES:
+        model_name = cfg.RESUME.split('/')[1] + '_' + cfg.RESUME.split('/')[2]
+        for epoch in range(1):
+            check_boxes(model_name, model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS,
+                    base_ds, postprocessors, postprocessors_target, image_ids, store_path, cfg.TRAIN.CLIP_MAX_NORM)
+
+
     for epoch in range(START_EPOCH, cfg.TRAIN.EPOCHS):
         if cfg.DIST.DISTRIBUTED:
             sampler_train.set_epoch(epoch)
-            
-        cur_epoch = epoch
+        
         # TODO: probe probs, boxes
         if cfg.ACCUMULATE_STATS:
             train_stats, probs = train_one_epoch(
-                model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS, cur_epoch,
-                base_ds, postprocessors, postprocessors_target, image_ids, cfg.TRAIN.CLIP_MAX_NORM)
+                model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS,
+                base_ds, postprocessors, postprocessors_target, image_ids, store_path, cfg.NUM_FEATURE_LEVELS, cfg.TRAIN.CLIP_MAX_NORM)
         
         else:
-            train_stats, thresh_stats = train_one_epoch(
+            # prototypes storing dict
+            train_stats, thresh_stats, outputs = train_one_epoch(
                 model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS, total_iter,
-                base_ds, postprocessors, postprocessors_target, image_ids, cfg.TRAIN.CLIP_MAX_NORM)
+                base_ds, postprocessors, postprocessors_target, image_ids, store_path, cfg.NUM_FEATURE_LEVELS, cfg.TRAIN.CLIP_MAX_NORM)
             
-            # train_stats = train_one_epoch(
-            #     model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS, total_iter,
-            #     base_ds, postprocessors, postprocessors_target, image_ids, cfg.TRAIN.CLIP_MAX_NORM)
+        if 'thresh_change_occurence' in outputs:
+            (output_dir / 'thresh_change_occurence').mkdir(exist_ok=True)
+            torch.save(outputs['thresh_change_occurence'], output_dir / 'thresh_change_occurence'/ f'thresh_tmp_list_{epoch:04}.pt')
         
-        
-        # import pdb; pdb.set_trace()
+        if 'memory_prototypes' in outputs['prototypes_enc']:
+            (output_dir / 'memory_prototypes').mkdir(exist_ok=True)
+            torch.save(outputs['prototypes_enc']['memory_prototypes'], output_dir /'memory_prototypes'/ f'ema_prototypes_epoch_{epoch:04}.pt')
+
         if type(thresh_stats)==list():
             if (epoch+1) % 1 == 0:
                 torch.save(thresh_stats, output_dir / f'stats_epoch_{epoch:04}.pt')

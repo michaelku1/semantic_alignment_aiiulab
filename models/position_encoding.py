@@ -36,12 +36,17 @@ class PositionEmbeddingSine(nn.Module):
         self.scale = scale
 
     def forward(self, tensor_list: NestedTensor):
+
+        # import pdb; pdb.set_trace()
         x = tensor_list.tensors
         mask = tensor_list.mask
         assert mask is not None
-        not_mask = ~mask
+        not_mask = ~mask # (B, H, W)
+
+        # count how many non mask elements are there (equivalent to height and width)
         y_embed = not_mask.cumsum(1, dtype=torch.float32)
         x_embed = not_mask.cumsum(2, dtype=torch.float32)
+
         if self.normalize:
             eps = 1e-6
             y_embed = (y_embed - 0.5) / (y_embed[:, -1:, :] + eps) * self.scale
@@ -52,9 +57,18 @@ class PositionEmbeddingSine(nn.Module):
 
         pos_x = x_embed[:, :, :, None] / dim_t
         pos_y = y_embed[:, :, :, None] / dim_t
+
+        # breakpoint()
+
+        # both dimensions comptute sin and cosine
         pos_x = torch.stack((pos_x[:, :, :, 0::2].sin(), pos_x[:, :, :, 1::2].cos()), dim=4).flatten(3)
         pos_y = torch.stack((pos_y[:, :, :, 0::2].sin(), pos_y[:, :, :, 1::2].cos()), dim=4).flatten(3)
+        
+        # feat dim becomes 256 after concat
         pos = torch.cat((pos_y, pos_x), dim=3).permute(0, 3, 1, 2)
+
+        # breakpoint()
+
         return pos
 
 
@@ -64,6 +78,8 @@ class PositionEmbeddingLearned(nn.Module):
     """
     def __init__(self, num_pos_feats=256):
         super().__init__()
+
+        # nn.Embedding(num_params, embedding dim)
         self.row_embed = nn.Embedding(50, num_pos_feats)
         self.col_embed = nn.Embedding(50, num_pos_feats)
         self.reset_parameters()
@@ -71,18 +87,26 @@ class PositionEmbeddingLearned(nn.Module):
     def reset_parameters(self):
         nn.init.uniform_(self.row_embed.weight)
         nn.init.uniform_(self.col_embed.weight)
-
+    
     def forward(self, tensor_list: NestedTensor):
         x = tensor_list.tensors
-        h, w = x.shape[-2:]
+        h, w = x.shape[-2:] # get tensor width and height
         i = torch.arange(w, device=x.device)
         j = torch.arange(h, device=x.device)
         x_emb = self.col_embed(i)
         y_emb = self.row_embed(j)
+
+        # x_emb (1,40,128) repeats h times
+        # y_emb (20,1,128) repeats w times 
+        # after concat the two positional encodings, repeat the batch dim batch size times
+        # the reason for repeating in both height and width dim is so the each of the 40x20 embedding has the same embedding
+        # fot the x and y position
         pos = torch.cat([
             x_emb.unsqueeze(0).repeat(h, 1, 1),
             y_emb.unsqueeze(1).repeat(1, w, 1),
         ], dim=-1).permute(2, 0, 1).unsqueeze(0).repeat(x.shape[0], 1, 1, 1)
+
+        # import pdb; pdb.set_trace()
         return pos
 
 
@@ -91,9 +115,11 @@ def build_position_encoding(cfg):
     if cfg.MODEL.POSITION_EMBEDDING in ('v2', 'sine'):
         # TODO find a better way of exposing other arguments
         position_embedding = PositionEmbeddingSine(N_steps, normalize=True)
+
     elif cfg.MODEL.POSITION_EMBEDDING in ('v3', 'learned'):
         position_embedding = PositionEmbeddingLearned(N_steps)
     else:
         raise ValueError(f"not supported {cfg.MODEL.POSITION_EMBEDDING}")
+
 
     return position_embedding

@@ -16,11 +16,20 @@ import torch
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+from torchvision import transforms
 
 from pathlib import Path, PurePath
 
+def inverse_transform(input_tensor):
+    invTrans = transforms.Compose([ transforms.Normalize(mean = [ 0., 0., 0. ],
+                                                        std = [ 1/0.229, 1/0.224, 1/0.225 ]),
+                                    transforms.Normalize(mean = [ -0.485, -0.456, -0.406 ],
+                                                        std = [ 1., 1., 1. ]),
+                                ])
+    
+    return invTrans(input_tensor)
 
-def plot_logs(logs, fields=('class_error', 'loss_bbox_unscaled', 'mAP'), ewm_col=0, log_name='log.txt'):
+def plot_logs(logs, fields=('class_error', 'loss_inter_class_enc', 'mAP'), ewm_col=0, log_name='log.txt', mode='test'):
     '''
     Function to plot specific fields from training log(s). Plots both training and test results.
 
@@ -62,19 +71,39 @@ def plot_logs(logs, fields=('class_error', 'loss_bbox_unscaled', 'mAP'), ewm_col
     for df, color in zip(dfs, sns.color_palette(n_colors=len(logs))):
         for j, field in enumerate(fields):
             if field == 'mAP':
-                coco_eval = pd.DataFrame(pd.np.stack(df.test_coco_eval.dropna().values)[:, 1]).ewm(com=ewm_col).mean()
+                # import pdb; pdb.set_trace()
+                coco_eval = pd.DataFrame(pd.np.stack(df.test_coco_eval_bbox.dropna().values)[:, 1]).ewm(com=ewm_col).mean()
                 axs[j].plot(coco_eval, c=color)
             else:
-                df.interpolate().ewm(com=ewm_col).mean().plot(
-                    y=[f'train_{field}', f'test_{field}'],
-                    ax=axs[j],
-                    color=[color] * 2,
-                    style=['-', '--']
-                )
-    for ax, field in zip(axs, fields):
-        ax.legend([Path(p).name for p in logs])
-        ax.set_title(field)
+                # df.interpolate().ewm(com=ewm_col).mean().plot(
+                #                     y=[f'test_{field}', f'train_{field}'],
+                #                     ax=axs[j],
+                #                     color=[color] * 2,
+                #                     style=['-', '--']
+                #                 )
+                if mode == 'test':
+                    df.interpolate().ewm(com=ewm_col).mean().plot(
+                                        y=[f'test_{field}'],
+                                        ax=axs[j],
+                                        color=[color] * 2,
+                                        style=['-', '--']
+                                    )
+                elif mode == 'train':
+                    df.interpolate().ewm(com=ewm_col).mean().plot(
+                                        y=[f'train_{field}'],
+                                        ax=axs[j],
+                                        color=[color] * 2,
+                                        style=['-', '--']
+                                    )
 
+
+    for ax, field in zip(axs, fields):
+        if mode == 'test':
+            ax.legend(['test']) # TODO show test and train legends
+        elif mode == 'train':
+            ax.legend(['train']) # TODO show test and train legends
+
+        ax.set_title(field)
 
 def plot_precision_recall(files, naming_scheme='iter'):
     if naming_scheme == 'exp_id':

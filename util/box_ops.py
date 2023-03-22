@@ -12,8 +12,149 @@
 """
 Utilities for bounding box manipulation and GIoU.
 """
+
+import os
 import torch
 from torchvision.ops.boxes import box_area
+from PIL import Image
+from matplotlib import pyplot as plt 
+
+
+def plot_results_eval(model_name, info, img_id, img_path):
+
+    '''
+    This is for plotting boxes for evaluation mode, which read an image from an image path
+
+    img_path: use path to read image
+    info: [box, class index, predicted probabilities]
+    '''
+
+    CLASSES = ['person','car','train','rider','truck','motorcycle','bicycle', 'bus'] # whole set
+
+    img = Image.open(img_path)
+
+    for key in list(info.keys()):
+        boxes = info[key][0]
+        class_idxs = info[key][1]
+        preds = info[key][2]
+
+        plt.figure(figsize=(16,10))
+        plt.imshow(img)
+        # image = mpimg.imread(p)
+        ax = plt.gca()
+
+        for (xmin, ymin, xmax, ymax), p, class_idx in zip(boxes.tolist(), preds, class_idxs):
+
+            ax.add_patch(plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin,
+                                    fill=False, color='g', linewidth=1))
+
+            text = f'{CLASSES[class_idx-1]}: {p:0.2f}'
+            
+            ax.text(xmin, ymin, text, fontsize=15,
+                    bbox=dict(facecolor='yellow', alpha=0.5))
+
+        city_name = str(img_path).split('/')[-2]
+        plt.axis('off')
+
+        # import pdb; pdb.set_trace()
+
+        if key == 'pred':
+            if not os.path.isdir(f'./{model_name}/box_plot_pred'):
+                os.makedirs(f'./{model_name}/box_plot_pred', exist_ok = True)
+
+            plt.savefig(f'./{model_name}/box_plot_pred/{city_name}_{img_id}.png')
+
+        elif key == 'gt':
+            if not os.path.isdir(f'./{model_name}/box_plot_gt'):
+                os.makedirs(f'./{model_name}/box_plot_gt', exist_ok = True)
+
+            plt.savefig(f'./{model_name}/box_plot_gt/{city_name}_{img_id}.png')
+
+        
+        # plt.axis('off')
+        # plt.show()
+        plt.close()
+
+
+def plot_results_train(model_name, info, img_ids, img_paths, samples):
+
+    '''
+    This is for plotting boxes for training mode, which uses unmasked samples
+    for visualization, note that this done for batch of images
+
+    info: {pred: [box, class index, predicted probabilities],
+             gt: [box, class index, predicted probabilities],} 
+
+    where pred and gt contains lists of tensors
+    
+    img_path: list of image paths
+    samples: list of unmasked image tensors
+    '''
+
+    CLASSES = ['person','car','train','rider','truck','motorcycle','bicycle', 'bus']
+    
+    B = len(samples)
+    # breakpoint()
+    # for predicted results and grountruths
+    for key in list(info.keys()):
+        boxes = info[key][0]
+        class_idxs = info[key][1]
+        preds = info[key][2]    
+
+        plt.figure(figsize=(16,10))
+        # plt.imshow(samples_i)
+        # ax = plt.gca()
+        
+        # for each sample
+        for i in range(B):
+            boxes_i = boxes[i]
+            preds_i = preds[i]
+            class_idxs_i = class_idxs[i]
+            img_paths_i = img_paths[i]
+            samples_i = samples[i]
+            img_ids_i = img_ids[i]
+
+            plt.imshow(samples_i)
+            ax = plt.gca()
+
+            # breakpoint()
+            # for each box
+            for box, p, cls_idx in zip(boxes_i.tolist(), preds_i.tolist(), class_idxs_i):
+
+                xmin, ymin, xmax, ymax = box                
+                ax.add_patch(plt.Rectangle((xmin, ymin), xmax - xmin, ymax - ymin,
+                                        fill=False, color='g', linewidth=1))
+
+                text = f'{CLASSES[cls_idx-1]}: {p:0.2f}'
+                ax.text(xmin, ymin, text, fontsize=15,
+                        bbox=dict(facecolor='yellow', alpha=0.5))
+
+
+            city_name = str(img_paths_i).split('/')[-2]
+            plt.axis('off')
+            # breakpoint()
+            # import pdb; pdb.set_trace()
+
+            if i//(B//2)==0:
+                domain_name = 'src'
+            else:
+                domain_name = 'tgt'
+            
+            if key == 'pred':
+                if not os.path.isdir(f'./{model_name}_images/box_plot_pred_{domain_name}'):
+                    os.makedirs(f'./{model_name}_images/box_plot_pred_{domain_name}', exist_ok = True)
+
+                plt.savefig(f'./{model_name}_images/box_plot_pred_{domain_name}/{city_name}_{img_ids_i}.png')
+
+            elif key == 'gt':
+                if not os.path.isdir(f'./{model_name}_images/box_plot_gt_{domain_name}'):
+                    os.makedirs(f'./{model_name}_images/box_plot_gt_{domain_name}', exist_ok = True)
+
+                plt.savefig(f'./{model_name}_images/box_plot_gt/_{domain_name}{city_name}_{img_ids_i}.png')
+
+            plt.axis('off')
+            plt.close()
+
 
 
 def box_cxcywh_to_xyxy(x):
@@ -58,7 +199,11 @@ def generalized_box_iou(boxes1, boxes2):
     """
     # degenerate boxes gives inf / nan results
     # so do an early check
-    assert (boxes1[:, 2:] >= boxes1[:, :2]).all()
+    # try:
+    #     assert (boxes1[:, 2:] >= boxes1[:, :2]).all()
+    # except AssertionError:
+    #     import pdb; pdb.set_trace()
+
     assert (boxes2[:, 2:] >= boxes2[:, :2]).all()
     iou, union = box_iou(boxes1, boxes2)
 

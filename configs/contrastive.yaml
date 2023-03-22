@@ -31,6 +31,11 @@ LOSS:
   SET_COST_CLASS: 2.0
   SET_COST_GIOU: 2.0
   SPACE_QUERY_LOSS_COEF: 0.1
+  MARGIN: 1
+  INTER_CLASS_COEF: 0.1
+  INTRA_CLASS_COEF: 1.
+  BG_LOSS_COEF: 1.
+
 MODEL:
   BACKBONE: resnet50
   BACKBONE_ALIGN: False
@@ -54,11 +59,14 @@ MODEL:
   SPACE_ALIGN: True
   TWO_STAGE: False
   WITH_BOX_REFINE: True
+
+
 NUM_WORKERS: 2
 OUTPUT_DIR: exps/r50_uda_c2fc
 RESUME: 
 SEED: 42
 START_EPOCH: 0
+### same config settings as deformable detr
 TRAIN:
   BATCH_SIZE: 2
   CLIP_MAX_NORM: 0.1
@@ -66,12 +74,16 @@ TRAIN:
   LR: 0.0002
   LR_BACKBONE: 2e-05
   LR_BACKBONE_NAMES: ['backbone.0']
-  LR_DROP: 40
+  LR_DROP: 40 # default gamma is 0.1
   LR_DROP_EPOCHS: None
   LR_LINEAR_PROJ_MULT: 0.1
   LR_LINEAR_PROJ_NAMES: ['reference_points', 'sampling_offsets']
   SGD: False
   WEIGHT_DECAY: 0.0001
 
-# TODO tsne
-# DEBUG: True
+FINETUNE: False
+DEBUG: False
+EMA: True
+FEAT_AUG: False
+ACCUMULATE_STATS: False
+CONTRASTIVE: True

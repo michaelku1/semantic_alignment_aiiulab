@@ -1,13 +1,27 @@
 from yacs.config import CfgNode as CN
 from numpy import pi
 
-
+# CfgNode has two methods: merge_from_file and merge_from_list
 _C = CN()
 
 # ------------------------------------------------------------------------
 # Training
 # ------------------------------------------------------------------------
 _C.TRAIN = CN()
+  # TODO: choose to not pass the domain attention modules
+_C.TRAIN.DOMAIN_ATTENTION_NAMES = ['space_attn', 'instance_attn', 'channel_attn']
+_C.TRAIN.DOMAIN_DISCRIMINATOR_NAMES= ['space_D', 'channel_D', 'instance_D']
+
+_C.TRAIN.LR_ENCODER= 1e-05
+_C.TRAIN.ENCODER_NAMES= ['encoder'] # set for a different learning rate
+
+_C.TRAIN.LR_DECODER= 1e-05
+_C.TRAIN.DECODER_NAMES= ['decoder']
+
+_C.TRAIN.LR_MULTI_LABEL_CLASSIFIER= 1e-05
+_C.TRAIN.MULTI_LABEL_CLASSIFIER_NAMES= ['multi_label_classifier']
+
+
 _C.TRAIN.LR = 2e-4
 _C.TRAIN.LR_BACKBONE_NAMES = ["backbone.0"]
 _C.TRAIN.LR_BACKBONE = 2e-5
@@ -52,6 +66,10 @@ _C.MODEL.NUM_QUERIES = 300 # Number of query slots
 _C.MODEL.DEC_N_POINTS = 4
 _C.MODEL.ENC_N_POINTS = 4
 
+# TODO: memory params
+_C.MODEL.MEMORY_SIZE = 10
+_C.MODEL.MEMORY_DIM = 512
+
 # * Segmentation
 _C.MODEL.MASKS = False # Train segmentation head if the flag is provided
 
@@ -60,6 +78,24 @@ _C.MODEL.BACKBONE_ALIGN = False
 _C.MODEL.SPACE_ALIGN = False
 _C.MODEL.CHANNEL_ALIGN = False
 _C.MODEL.INSTANCE_ALIGN = False
+
+# TODO: category alignemnt
+_C.MODEL.CATEGORY_ALIGN = False
+_C.MODEL.ENCODER_CLASS_ALIGN = False
+
+_C.MODEL.PROTOTYPE_ALIGN = False
+# query or sequence
+_C.MODEL.LOCAL_PROTOTYPE_ALIGN = 'sequence'
+_C.MODEL.GLOBAL_PROTOTYPE_ALIGN = False
+_C.MODEL.MEMORY = False
+_C.MODEL.STAGE = 'pretrain'
+
+# TODO: triplet loss params
+_C.MODEL.TAU = 0.2
+_C.MODEL.GAMMA = 0.1
+_C.MODEL.MARGIN = 0.01
+_C.MODEL.CENTERS = 10
+
 
 # ------------------------------------------------------------------------
 # Loss
@@ -82,9 +118,40 @@ _C.LOSS.BACKBONE_LOSS_COEF = 0.1
 _C.LOSS.SPACE_QUERY_LOSS_COEF = 0.1
 _C.LOSS.CHANNEL_QUERY_LOSS_COEF = 0.1
 _C.LOSS.INSTANCE_QUERY_LOSS_COEF = 0.1
+_C.LOSS.CATEGORY_QUERY_LOSS_COEF = 0.1
+_C.LOSS.MARGIN = 1
+
+# TODO for current implem.
+_C.LOSS.INTER_CLASS_COEF = 0.1
+_C.LOSS.INTRA_CLASS_COEF = 1.
+_C.LOSS.INTRA_CLASS_COEF = 0.1
+
+_C.LOSS.BG_LOSS_COEF = 0.1
+
+_C.LOSS.CATEGORY_TOKEN_LOSS_COEF = 1.
+
+# multi class
+_C.LOSS.MULTI_CLASS_COEF = 0.01
+
+# global
+_C.LOSS.PROTOTYPE_TOKENS_LOSS_COEF = 0.1
+
+# local
+_C.LOSS.LOCAL_DECODER_EMBED_COEF = 0.1
+# _C.LOSS.ACTIVATION_MAP_ALIGN_LOSS_COEF = 0.1
+_C.LOSS.PROTOTYPE_ALIGN_LOSS_COEF = 0.1
+_C.LOSS.CMT_CLS_JS = 1.
 _C.LOSS.FOCAL_ALPHA = 0.25
 _C.LOSS.DA_GAMMA = 0
 
+_C.LOSS.SOFT_TRIPLET_SRC_COEF = 0.1
+_C.LOSS.SOFT_TRIPLET_TGT_COEF = 0.1
+_C.LOSS.COSISTENCY_COEF = 0.1
+
+_C.LOSS.MULTI_LABEL_LOSS_COEF = 0.1
+_C.LOSS.LAMDA = 0.25
+_C.LOSS.AUG_LOSS_COEF = 1.
+_C.LOSS.EOS_COEF = 0.1
 
 # ------------------------------------------------------------------------
 # dataset parameters
@@ -109,6 +176,7 @@ _C.DIST.GPU = None
 _C.DIST.DIST_URL = None
 _C.DIST.DIST_BACKEND = None
 
+
 # ------------------------------------------------------------------------
 # Miscellaneous
 # ------------------------------------------------------------------------
@@ -116,10 +184,26 @@ _C.OUTPUT_DIR = '' # path where to save, empty for no saving
 _C.DEVICE = 'cuda' # device to use for training / testing
 _C.SEED = 42
 _C.RESUME = '' # resume from checkpoint
+_C.RESUME_MEMORY = '' # resume memory items from checkpoint
 _C.START_EPOCH = 0 # start epoch
 _C.EVAL = False
 _C.NUM_WORKERS = 2
 _C.CACHE_MODE = False # whether to cache images on memory
+
+# debug mode
+_C.DEBUG = False
+_C.CHECK_BOXES = False
+_C.PLOT_MODE = 'all'
+_C.CAM_VIZ = False
+_C.ACCUMULATE_STATS = False
+
+# exp
+_C.FINETUNE = False
+_C.EMA = False
+_C.FEAT_AUG = False
+_C.CONTRASTIVE = False
+
+
 
 
 def get_cfg_defaults():

@@ -24,7 +24,6 @@ from .torchvision_datasets import CocoDetection as TvCocoDetection
 from util.misc import get_local_rank, get_local_size
 import datasets.transforms as T
 
-
 class CocoDetection(TvCocoDetection):
     def __init__(self, img_folder, ann_file, transforms, return_masks, cache_mode=False, local_rank=0, local_size=1):
         super(CocoDetection, self).__init__(img_folder, ann_file,
@@ -35,10 +34,15 @@ class CocoDetection(TvCocoDetection):
     def __getitem__(self, idx):
         img, target = super(CocoDetection, self).__getitem__(idx)
         image_id = self.ids[idx]
+    
         target = {'image_id': image_id, 'annotations': target}
-        img, target = self.prepare(img, target)
+
+        img, target = self.prepare(img, target) # convert polys to mask
+
         if self._transforms is not None:
+            # len(target) is len of dict
             img, target = self._transforms(img, target)
+
         return img, target
 
 
@@ -125,7 +129,8 @@ class ConvertCocoPolysToMask(object):
 
 
 def make_coco_transforms(image_set):
-
+    
+    # import pdb; pdb.set_trace()
     normalize = T.Compose([
         T.ToTensor(),
         T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
@@ -166,6 +171,56 @@ def build(image_set, cfg):
     }
 
     img_folder, ann_file = PATHS[image_set]
+
     dataset = CocoDetection(img_folder, ann_file, transforms=make_coco_transforms(image_set), return_masks=cfg.MODEL.MASKS,
                             cache_mode=cfg.CACHE_MODE, local_rank=get_local_rank(), local_size=get_local_size())
+
+    
     return dataset
+
+
+
+def make_support_transforms():
+    """
+    Transforms for support images during the training phase.
+    For transforms for support images during inference, please check dataset_support.py
+    """
+    normalize = T.Compose([
+        T.ToTensor(),
+        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    ])
+
+    scales = [448, 464, 480, 496, 512, 528, 544, 560, 576, 592, 608, 624, 640, 656, 672]
+
+    return T.Compose([
+        T.RandomHorizontalFlip(),
+        T.RandomColorJitter(p=0.25),
+        T.RandomSelect(
+            T.RandomResize(scales, max_size=672),
+            T.Compose([
+                T.RandomResize([400, 500, 600]),
+                T.RandomSizeCrop(384, 600),
+                T.RandomResize(scales, max_size=672),
+            ])
+        ),
+        normalize,
+    ])
+
+def build_with_class_images(args, img_folder, ann_file, image_set, with_support):
+    root = Path(cfg.DATASET.COCO_PATH)
+    assert root.exists(), f'provided COCO path {root} does not exist'
+
+    PATHS = {
+        "train": (root / "train2017", root / "annotations" / f'{mode}_train2017.json'),
+        "val": (root / "val2017", root / "annotations" / f'{mode}_val2017.json'),
+    }
+
+    img_folder, ann_file = PATHS[image_set]
+    return DetectionDataset(args, img_folder, ann_file,
+                            transforms=make_transforms(image_set),
+                            support_transforms=make_support_transforms(),
+                            return_masks=False,
+                            with_support=with_support,
+                            cache_mode=args.cache_mode,
+                            local_rank=get_local_rank(),
+                            local_size=get_local_size())

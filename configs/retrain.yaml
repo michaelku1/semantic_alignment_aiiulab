@@ -4,7 +4,7 @@ DATASET:
   COCO_PATH: ../datasets
   DATASET_FILE: cityscapes_to_foggy_cityscapes
   DA_MODE: uda
-  NUM_CLASSES: 9
+  NUM_CLASSES: 4
   REMOVE_DIFFICULT: False
 DEVICE: cuda
 DIST:
@@ -31,8 +31,11 @@ LOSS:
   SET_COST_CLASS: 2.0
   SET_COST_GIOU: 2.0
   SPACE_QUERY_LOSS_COEF: 0.1
+  CATEGORY_QUERY_LOSS_COEF: 0.1
+  PROTOTYPE_ALIGN_LOSS_COEF: 0.1
 MODEL:
   BACKBONE: resnet50
+  PROTOTYPE_ALIGN: True
   BACKBONE_ALIGN: False
   CHANNEL_ALIGN: True
   DEC_LAYERS: 6
@@ -54,15 +57,20 @@ MODEL:
   SPACE_ALIGN: True
   TWO_STAGE: False
   WITH_BOX_REFINE: True
+  MEMORY_DIM: 256
+  MEMORY_SIZE: 180
+  CATEGORY_ALIGN: False
+  STAGE: retrain
+
 NUM_WORKERS: 2
-OUTPUT_DIR: exps/r50_uda_c2fc
-RESUME: 
+OUTPUT_DIR: exps/embedding_vis
+RESUME:
 SEED: 42
 START_EPOCH: 0
 TRAIN:
   BATCH_SIZE: 2
   CLIP_MAX_NORM: 0.1
-  EPOCHS: 50
+  EPOCHS: 200
   LR: 0.0002
   LR_BACKBONE: 2e-05
   LR_BACKBONE_NAMES: ['backbone.0']
@@ -70,8 +78,19 @@ TRAIN:
   LR_DROP_EPOCHS: None
   LR_LINEAR_PROJ_MULT: 0.1
   LR_LINEAR_PROJ_NAMES: ['reference_points', 'sampling_offsets']
+
+  # TODO: choose to not pass the domain attention modules
+  DOMAIN_ATTENTION_NAMES: ['space_attn', 'instance_attn', 'channel_attn']
+  DOMAIN_DISCRIMINATOR_NAMES: ['space_D', 'channel_D', 'instance_D']
+
+  LR_ENCODER: 1e-05
+  ENCODER_NAMES: ['encoder'] # set for a different learning rate
+
+  LR_DECODER: 1e-05
+  DECODER_NAMES: ['decoder']
+
+  LR_MULTI_LABEL_CLASSIFIER: 1e-05
+  MULTI_LABEL_CLASSIFIER_NAMES: ['multi_label_classifier']
+
   SGD: False
   WEIGHT_DECAY: 0.0001
-
-# TODO tsne
-# DEBUG: True

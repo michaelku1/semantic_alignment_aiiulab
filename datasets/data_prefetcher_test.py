@@ -8,12 +8,12 @@
 
 import torch
 
+# TODO this is where targets are stored in a list
 def to_cuda(samples, targets, device):
-    # [{'boxes': tensor([[0.7190, 0.3672, 0.2085, 0.2852], [0.4966, 0.4048, 0.1982, 0.0576]]), 'labels': tensor([3, 3]), 'image_id': tensor([1481]), 'area': tensor([40792.3516,  3441.1697]), 'iscrowd': tensor([0, 0]), 'orig_size': tensor([1024, 2048]), 'size': tensor([ 666, 1332])}]
-    # [{'boxes': [tensor([0.7190, 0.3672, 0.2085, 0.2852]), tensor([0.4966, 0.4048, 0.1982, 0.0576])], 'labels': tensor([3, 3]), 'image_id': tensor([1481]), 'area': tensor([40792.3516,  3441.1697]), 'iscrowd': tensor([0, 0]), 'orig_size': tensor([1024, 2048]), 'size': tensor([ 666, 1332])}]
     # import pdb; pdb.set_trace()
     samples = samples.to(device, non_blocking=True)
-    targets = [{k: v.to(device, non_blocking=True) for k, v in t.items()} for t in targets]
+    # redundant list quick fix
+    targets = [{k: v.to(device, non_blocking=True) for k, v in t[0].items()} for t in targets]
     return samples, targets
 
 ### collated dataloader
@@ -31,7 +31,6 @@ class data_prefetcher():
             ###
             self.next_samples, self.next_targets = next(self.loader) ### collated dataloader
             # import pdb; pdb.set_trace()
-
         except StopIteration:
             self.next_samples = None
             self.next_targets = None
@@ -62,12 +61,12 @@ class data_prefetcher():
             torch.cuda.current_stream().wait_stream(self.stream)
             samples = self.next_samples
             targets = self.next_targets
-
             # prefetch allows record_stream
             if samples is not None:
                 samples.record_stream(torch.cuda.current_stream())
+
+            # import pdb; pdb.set_trace()
             if targets is not None:
-                # import pdb; pdb.set_trace()
                 for t in targets:
                     for k, v in t.items():
                         v.record_stream(torch.cuda.current_stream())

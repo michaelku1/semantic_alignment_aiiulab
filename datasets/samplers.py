@@ -58,6 +58,9 @@ class DistributedSampler(Sampler):
 
         # add extra samples to make it evenly divisible
         indices += indices[: (self.total_size - len(indices))]
+        # print(len(self.dataset))
+        # print(self.total_size)
+        # quit()
         assert len(indices) == self.total_size
 
         # subsample

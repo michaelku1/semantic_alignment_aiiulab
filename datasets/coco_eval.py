@@ -21,46 +21,66 @@ import contextlib
 import copy
 import numpy as np
 import torch
-
+# from pycocotools import cocoeval
 from pycocotools.cocoeval import COCOeval
+# print(cocoeval.__file__)
+# quit()
+
 from pycocotools.coco import COCO
 import pycocotools.mask as mask_util
 
 from util.misc import all_gather
 
-
+# TODO: wrapper for COCOeval
 class CocoEvaluator(object):
     def __init__(self, coco_gt, iou_types):
         assert isinstance(iou_types, (list, tuple))
         coco_gt = copy.deepcopy(coco_gt)
         self.coco_gt = coco_gt
-
+        self.params = Params(iouType=iou_types[0])
         self.iou_types = iou_types
-        self.coco_eval = {}
+        self.coco_eval = {} # accumulate evaluation results
         for iou_type in iou_types:
             self.coco_eval[iou_type] = COCOeval(coco_gt, iouType=iou_type)
 
         self.img_ids = []
+
         self.eval_imgs = {k: [] for k in iou_types}
+
+        if not coco_gt is None:
+            self.params.imgIds = sorted(coco_gt.getImgIds())
+            self.params.catIds = sorted(coco_gt.getCatIds())
+    
 
     def update(self, predictions):
         img_ids = list(np.unique(list(predictions.keys())))
         self.img_ids.extend(img_ids)
 
         for iou_type in self.iou_types:
-            results = self.prepare(predictions, iou_type)
-
+            results = self.prepare(predictions, iou_type) # turn all predictions in a single or multiple images into a list of predictions
             # suppress pycocotools prints
             with open(os.devnull, 'w') as devnull:
                 with contextlib.redirect_stdout(devnull):
                     coco_dt = COCO.loadRes(self.coco_gt, results) if results else COCO()
-            coco_eval = self.coco_eval[iou_type]
 
-            coco_eval.cocoDt = coco_dt
-            coco_eval.params.imgIds = list(img_ids)
-            img_ids, eval_imgs = evaluate(coco_eval)
+            coco_eval = self.coco_eval[iou_type] # e.g bbox
 
-            self.eval_imgs[iou_type].append(eval_imgs)
+            coco_eval.cocoDt = coco_dt # detection results
+
+            # import pdb; pdb.set_trace()
+
+            # coco_eval.params.catIds = [1] # test
+
+            coco_eval.params.imgIds = list(img_ids) # dynamically update the img_ids
+
+            # returned evaluated results _, (8,4,2)
+            img_ids, eval_imgs = evaluate(coco_eval) # per image evaluation
+            
+            
+            self.eval_imgs[iou_type].append(eval_imgs) # appending results for new images at every iteration
+
+            # import pdb; pdb.set_trace()
+
 
     def synchronize_between_processes(self):
         for iou_type in self.iou_types:
@@ -242,6 +262,8 @@ def evaluate(self):
         computeIoU = self.computeIoU
     elif p.iouType == 'keypoints':
         computeIoU = self.computeOks
+    
+    # compute iou for every image
     self.ious = {
         (imgId, catId): computeIoU(imgId, catId)
         for imgId in p.imgIds
@@ -249,14 +271,22 @@ def evaluate(self):
 
     evaluateImg = self.evaluateImg
     maxDet = p.maxDets[-1]
+
+    ### len(evalImgs)==64 --> (8,4,2)
+
+    # import pdb; pdb.set_trace()
     evalImgs = [
         evaluateImg(imgId, catId, areaRng, maxDet)
         for catId in catIds
         for areaRng in p.areaRng
         for imgId in p.imgIds
     ]
+
+    # import pdb; pdb.set_trace()
     # this is NOT in the pycocotools code, but could be done outside
-    evalImgs = np.asarray(evalImgs).reshape(len(catIds), len(p.areaRng), len(p.imgIds))
+    evalImgs = np.asarray(evalImgs).reshape(len(catIds), len(p.areaRng), len(p.imgIds)) # (8,4,2)
+
+
     self._paramsEval = copy.deepcopy(self.params)
     # toc = time.time()
     # print('DONE (t={:0.2f}s).'.format(toc-tic))
@@ -265,3 +295,41 @@ def evaluate(self):
 #################################################################
 # end of straight copy from pycocotools, just removing the prints
 #################################################################
+
+class Params(object):
+    '''
+    Params for coco evaluation api
+    '''
+    def setDetParams(self):
+        self.imgIds = []
+        self.catIds = []
+        # np.arange causes trouble.  the data point on arange is slightly larger than the true value
+        self.iouThrs = np.linspace(.5, 0.95, int(np.round((0.95 - .5) / .05)) + 1, endpoint=True)
+        self.recThrs = np.linspace(.0, 1.00, int(np.round((1.00 - .0) / .01)) + 1, endpoint=True)
+        self.maxDets = [1, 10, 100]
+        self.areaRng = [[0 ** 2, 1e5 ** 2], [0 ** 2, 32 ** 2], [32 ** 2, 96 ** 2], [96 ** 2, 1e5 ** 2]]
+        self.areaRngLbl = ['all', 'small', 'medium', 'large']
+        self.useCats = 1
+
+    def setKpParams(self):
+        self.imgIds = []
+        self.catIds = []
+        # np.arange causes trouble.  the data point on arange is slightly larger than the true value
+        self.iouThrs = np.linspace(.5, 0.95, int(np.round((0.95 - .5) / .05)) + 1, endpoint=True)
+        self.recThrs = np.linspace(.0, 1.00, int(np.round((1.00 - .0) / .01)) + 1, endpoint=True)
+        self.maxDets = [20]
+        self.areaRng = [[0 ** 2, 1e5 ** 2], [32 ** 2, 96 ** 2], [96 ** 2, 1e5 ** 2]]
+        self.areaRngLbl = ['all', 'medium', 'large']
+        self.useCats = 1
+        self.kpt_oks_sigmas = np.array([.26, .25, .25, .35, .35, .79, .79, .72, .72, .62,.62, 1.07, 1.07, .87, .87, .89, .89])/10.0
+
+    def __init__(self, iouType='segm'):
+        if iouType == 'segm' or iouType == 'bbox':
+            self.setDetParams()
+        elif iouType == 'keypoints':
+            self.setKpParams()
+        else:
+            raise Exception('iouType not supported')
+        self.iouType = iouType
+        # useSegm is deprecated
+        self.useSegm = None

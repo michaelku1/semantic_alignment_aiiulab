@@ -24,7 +24,7 @@ def get_coco_api_from_dataset(dataset):
     if isinstance(dataset, CocoDetection):
         return dataset.coco
 
-
+# wrpper
 def build_dataset(image_set, cfg):
     if cfg.DATASET.DATASET_FILE == 'coco':
         return build_coco(image_set, cfg)
@@ -32,11 +32,16 @@ def build_dataset(image_set, cfg):
         # to avoid making panopticapi required for coco
         from .coco_panoptic import build as build_coco_panoptic
         return build_coco_panoptic(image_set, cfg)
+
+    # TODO: add new dataset for experiments
     DAOD_dataset = [
         'cityscapes_to_foggy_cityscapes',
         'sim10k_to_cityscapes_caronly',
-        'cityscapes_to_bdd_daytime'
+        'cityscapes_to_bdd_daytime',
+        'cityscapes_to_foggy_cityscapes_category'
     ]
+    
+    # TODO test with target gts
     if cfg.DATASET.DATASET_FILE in DAOD_dataset:
         from .DAOD import build
         return build(image_set, cfg)
