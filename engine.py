@@ -288,10 +288,7 @@ def evaluate(model, criterion, postprocessors, postprocessors_target, data_loade
         
         outputs = model(samples, None, None, None, None)
 
-        # breakpoint()
-
-        # import pdb; pdb.set_trace()
-        loss_dict = criterion(outputs, targets, mode='test')
+        loss_dict = criterion(outputs, targets, mode='test', scale='single')
         weight_dict = criterion.weight_dict
 
         # reduce losses over all GPUs for logging purposes

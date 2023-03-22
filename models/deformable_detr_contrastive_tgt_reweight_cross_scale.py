@@ -1525,9 +1525,9 @@ class SetCriterion(nn.Module):
     def forward(self, outputs, targets, mode='train', scale='single'):
         # debugging mode not implemented yet
         if scale == 'single':
-            losses = self.forward_single_scale(outputs, targets, mode='train')
+            losses = self.forward_single_scale(outputs, targets, mode=mode)
         elif scale == 'multi':
-            losses = self.forward_cross_scale(outputs, targets, mode='train')
+            losses = self.forward_cross_scale(outputs, targets, mode=mode)
         
         # breakpoint()
         return losses
@@ -1541,7 +1541,6 @@ class SetCriterion(nn.Module):
         """
 
 
-        # import pdb; pdb.set_trace()
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
         
 
@@ -1933,8 +1932,11 @@ def build(cfg):
     weight_dict['loss_instance_query'] = cfg.LOSS.INSTANCE_QUERY_LOSS_COEF
     weight_dict['loss_inter_class_enc'] = cfg.LOSS.INTER_CLASS_COEF
     weight_dict['loss_intra_class_enc'] = cfg.LOSS.INTRA_CLASS_COEF
-    weight_dict['loss_inter_class_enc_cross_scale'] = cfg.LOSS.INTER_CLASS_COEF
-    weight_dict['loss_intra_class_enc_cross_scale'] = cfg.LOSS.INTRA_CLASS_COEF
+    # weight_dict['loss_inter_class_enc_cross_scale'] = cfg.LOSS.INTER_CLASS_COEF
+    # weight_dict['loss_intra_class_enc_cross_scale'] = cfg.LOSS.INTRA_CLASS_COEF
+    weight_dict['loss_inter_class_enc_cross_scale'] = cfg.LOSS.CROSS_SCALE_INTER_CLASS_COEF
+    weight_dict['loss_intra_class_enc_cross_scale'] = cfg.LOSS.CROSS_SCALE_INTRA_CLASS_COEF
+
     # weight_dict['bg_loss'] = cfg.LOSS.BG_LOSS_COEF
 
     # weight_dict['loss_inter_class_dec'] = cfg.LOSS.INTER_CLASS_COEF
