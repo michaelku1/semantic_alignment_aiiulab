@@ -168,7 +168,8 @@ class DeformableDETR(nn.Module):
             len(features) == 1
             self.backbone.strides = [32]
             self.backbone.num_channels = [2048]
-        else
+        
+        If cfg.MODEL.NUM_FEATURE_LEVELS > 1, then
             len(features) == 3
             self.backbone.strides = [8, 16, 32]
             self.backbone.num_channels = [512, 1024, 2048]
