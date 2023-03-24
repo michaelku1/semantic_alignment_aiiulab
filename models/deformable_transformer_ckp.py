@@ -10,24 +10,24 @@
 # ------------------------------------------------------------------------
 
 import copy
-from typing import Optional, List
 import math
 
 import torch
 import torch.nn.functional as F
-from torch import nn, Tensor
-from torch.nn.init import xavier_uniform_, constant_, uniform_, normal_
+from torch import nn
+from torch.nn.init import xavier_uniform_, constant_, normal_
 from torch.utils.checkpoint import checkpoint
 
 from util.misc import inverse_sigmoid
 from models.ops.modules import MSDeformAttn
 from models.utils import DomainAttention, GradientReversal, remove_mask_and_warp
 
+
 class DeformableTransformer(nn.Module):
     def __init__(self, d_model=256, nhead=8,
                  num_encoder_layers=6, num_decoder_layers=6, dim_feedforward=1024, dropout=0.1,
                  activation="relu", return_intermediate_dec=False,
-                 num_feature_levels=4, dec_n_points=4,  enc_n_points=4,
+                 num_feature_levels=4, dec_n_points=4, enc_n_points=4,
                  two_stage=False, two_stage_num_proposals=300,
                  space_align=False, channel_align=False, instance_align=False):
         super().__init__()
@@ -109,7 +109,7 @@ class DeformableTransformer(nn.Module):
     # We don't need this(Two stage)
     def gen_encoder_output_proposals(self, memory, memory_padding_mask, spatial_shapes):
         N_, S_, C_ = memory.shape
-        base_scale = 4.0
+        # base_scale = 4.0
         proposals = []
         _cur = 0
         for lvl, (H_, W_) in enumerate(spatial_shapes):
@@ -206,7 +206,7 @@ class DeformableTransformer(nn.Module):
                 src_warped, pos_warped = remove_mask_and_warp(
                     src_flatten, lvl_pos_embed_flatten, mask_flatten, level_start_index, spatial_shapes
                 )
-                channel_query = self.channel_query(self.grl(src_warped+pos_warped)).flatten(0, 1).transpose(1, 2)
+                channel_query = self.channel_query(self.grl(src_warped + pos_warped)).flatten(0, 1).transpose(1, 2)
 
         # encoder
         memory, space_query, channel_query = self.encoder(
@@ -302,7 +302,7 @@ class DeformableTransformerEncoderLayer(nn.Module):
     def with_pos_embed(tensor, pos):
         return tensor if pos is None else tensor + pos
         
-    def ffn_e1(self,src):
+    def ffn_e1(self, src):
         def inner_forward_e1(src):
             src2 = self.activation(self.linear1(src))
             return src2
@@ -312,7 +312,7 @@ class DeformableTransformerEncoderLayer(nn.Module):
             src2 = self.activation(self.linear1(src))
         return src2
 
-    def ffn_e2(self,src2):
+    def ffn_e2(self, src2):
         def inner_forward_e2(src2):
             src2 = self.linear2(src2)
             return src2
@@ -349,11 +349,11 @@ class DeformableTransformerEncoderLayer(nn.Module):
             if self.space_align:
                 space_query = self.space_attn(space_query, src, pos, padding_mask)  # (N, 1, d_model), space_query is updated by residual connection while src & pos remains
             if self.channel_align:
-                src_warped, pos_warped = remove_mask_and_warp(src, pos, padding_mask, level_start_index, spatial_shapes)   
+                src_warped, pos_warped = remove_mask_and_warp(src, pos, padding_mask, level_start_index, spatial_shapes)
                 
                 channel_query = self.channel_attn(
-                    channel_query, # bsz * num_feature_levels, 1, H*W
-                    src_warped.flatten(0, 1).transpose(1, 2), # bsz * num_feature_levels, C, H*W
+                    channel_query,  # bsz * num_feature_levels, 1, H*W
+                    src_warped.flatten(0, 1).transpose(1, 2),  # bsz * num_feature_levels, C, H*W
                     pos_warped.flatten(0, 1).transpose(1, 2)
                 )
 
@@ -362,7 +362,7 @@ class DeformableTransformerEncoderLayer(nn.Module):
         src2 = self.dropout2(src2)
         src2 = self.ffn_e2(src2)
         src = src + self.dropout3(src2)
-        src = self.norm2(src) 
+        src = self.norm2(src)
 
         return src, space_query, channel_query
 
@@ -454,7 +454,7 @@ class DeformableTransformerDecoderLayer(nn.Module):
     def with_pos_embed(tensor, pos):
         return tensor if pos is None else tensor + pos
         
-    def ffn_d1(self,tgt):
+    def ffn_d1(self, tgt):
         def inner_forward_d1(tgt):
             tgt2 = self.activation(self.linear1(tgt))
             return tgt2
@@ -464,7 +464,7 @@ class DeformableTransformerDecoderLayer(nn.Module):
             tgt2 = self.activation(self.linear1(tgt))
         return tgt2
 
-    def ffn_d2(self,tgt2):
+    def ffn_d2(self, tgt2):
         def inner_forward_d2(tgt2):
             tgt2 = self.linear2(tgt2)
             return tgt2
@@ -482,7 +482,7 @@ class DeformableTransformerDecoderLayer(nn.Module):
         # src: (N, H_0W_0+...H_3W_3, C), `memory` from encoder, transformed feature map
         # src_spatial_shapes: (#lvl, 2), the feature shape in each level
         # level_start_index: tensor([0, H_0W_0=14028, H_0W_0+H_1W_1=17556, H_0W_0+H_1W_1+H_2W_2=18438])
-        # src_padding_mask: 
+        # src_padding_mask:
 
         # self attention
         q = k = self.with_pos_embed(tgt, query_pos)
@@ -539,8 +539,7 @@ class DeformableTransformerDecoder(nn.Module):
         for lid, layer in enumerate(self.layers):
             if reference_points.shape[-1] == 4:
                 # 2-stage
-                reference_points_input = reference_points[:, :, None] \
-                                         * torch.cat([src_valid_ratios, src_valid_ratios], -1)[:, None]
+                reference_points_input = reference_points[:, :, None] * torch.cat([src_valid_ratios, src_valid_ratios], -1)[:, None]
             else:
                 # 1-stage
                 assert reference_points.shape[-1] == 2
@@ -555,12 +554,12 @@ class DeformableTransformerDecoder(nn.Module):
 
             # hack implementation for iterative bounding box refinement
             if self.bbox_embed is not None:
-                tmp = self.bbox_embed[lid](output) # (N, #query, d_model) → (N, #query, 4)
+                tmp = self.bbox_embed[lid](output)  # (N, #query, d_model) → (N, #query, 4)
 
                 if reference_points.shape[-1] == 4:
                     # (N, 300, 4)
                     new_reference_points = tmp + inverse_sigmoid(reference_points)
-                    new_reference_points = new_reference_points.sigmoid()   
+                    new_reference_points = new_reference_points.sigmoid()
                 else:
                     assert reference_points.shape[-1] == 2
                     new_reference_points = tmp
@@ -595,18 +594,18 @@ def _get_activation_fn(activation):
         return F.glu
     raise RuntimeError(F"activation should be relu/gelu, not {activation}.")
 
-#important
+
 def build_deforamble_transformer(cfg):
     return DeformableTransformer(
-        d_model=cfg.MODEL.HIDDEN_DIM, #256
-        nhead=cfg.MODEL.NHEADS, #8
-        num_encoder_layers=cfg.MODEL.ENC_LAYERS, #6
-        num_decoder_layers=cfg.MODEL.DEC_LAYERS, #6
-        dim_feedforward=cfg.MODEL.DIM_FEEDFORWARD, #1024
-        dropout=cfg.MODEL.DROPOUT, 
+        d_model=cfg.MODEL.HIDDEN_DIM,  # 256
+        nhead=cfg.MODEL.NHEADS,  # 8
+        num_encoder_layers=cfg.MODEL.ENC_LAYERS,  # 6
+        num_decoder_layers=cfg.MODEL.DEC_LAYERS,  # 6
+        dim_feedforward=cfg.MODEL.DIM_FEEDFORWARD,  # 1024
+        dropout=cfg.MODEL.DROPOUT,
         activation="relu",
         return_intermediate_dec=True,
-        num_feature_levels=cfg.MODEL.NUM_FEATURE_LEVELS, #4
+        num_feature_levels=cfg.MODEL.NUM_FEATURE_LEVELS,  # 4
         dec_n_points=cfg.MODEL.DEC_N_POINTS,
         enc_n_points=cfg.MODEL.ENC_N_POINTS,
         two_stage=cfg.MODEL.TWO_STAGE,
@@ -614,5 +613,3 @@ def build_deforamble_transformer(cfg):
         space_align=cfg.MODEL.SPACE_ALIGN,
         channel_align=cfg.MODEL.CHANNEL_ALIGN,
         instance_align=cfg.MODEL.INSTANCE_ALIGN)
-
-
