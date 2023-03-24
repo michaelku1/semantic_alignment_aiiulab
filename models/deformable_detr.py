@@ -166,12 +166,12 @@ class DeformableDETR(nn.Module):
         """
         If cfg.MODEL.NUM_FEATURE_LEVELS == 1, then
             len(features) == 1
-            self.backbone[0].strides = [32]
-            self.backbone[0].num_channels = [2048]
+            self.backbone.strides = [32]
+            self.backbone.num_channels = [2048]
         else
             len(features) == 3
-            self.backbone[0].strides = [8, 16, 32]
-            self.backbone[0].num_channels = [512, 1024, 2048]
+            self.backbone.strides = [8, 16, 32]
+            self.backbone.num_channels = [512, 1024, 2048]
         """
         # If cfg.MODEL.NUM_FEATURE_LEVELS == 4
         #     features: [nested_tensor_0, nested_tensor_1, nested_tensor_2]
