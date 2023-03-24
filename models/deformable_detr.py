@@ -163,14 +163,25 @@ class DeformableDETR(nn.Module):
         # samples.mask: (N ,H, W)
         
         features, pos = self.backbone(samples)  # features size are different
-        # features: [nested_tensor_0, nested_tensor_1, nested_tensor_2]
-        #     features[0].tensors: (2,  512, 84, 167)
-        #     features[1].tensors: (2, 1024, 42,  84)
-        #     features[2].tensors: (2, 2048, 21,  42)
-        # pos: [pos_emb_tensor_0, pos_emb_tensor_1, pos_emb_tensor_2]
-        #     pos[0]: (2, 256, 84, 167)
-        #     pos[1]: (2, 256, 42,  84)
-        #     pos[2]: (2, 256, 21,  42)
+        """
+        If cfg.MODEL.NUM_FEATURE_LEVELS == 1, then
+            len(features) == 1
+            self.backbone[0].strides = [32]
+            self.backbone[0].num_channels = [2048]
+        else
+            len(features) == 3
+            self.backbone[0].strides = [8, 16, 32]
+            self.backbone[0].num_channels = [512, 1024, 2048]
+        """
+        # If cfg.MODEL.NUM_FEATURE_LEVELS == 4
+        #     features: [nested_tensor_0, nested_tensor_1, nested_tensor_2]
+        #         features[0].tensors: (2,  512, 84, 167)
+        #         features[1].tensors: (2, 1024, 42,  84)
+        #         features[2].tensors: (2, 2048, 21,  42)
+        #     pos: [pos_emb_tensor_0, pos_emb_tensor_1, pos_emb_tensor_2]
+        #         pos[0]: (2, 256, 84, 167)
+        #         pos[1]: (2, 256, 42,  84)
+        #         pos[2]: (2, 256, 21,  42)
 
         srcs = []
         masks = []
