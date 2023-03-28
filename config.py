@@ -191,7 +191,7 @@ _C.EVAL = False
 _C.NUM_WORKERS = 2
 _C.CACHE_MODE = False # whether to cache images on memory
 
-
+_C.GRADIENT_CHECKPOINT = False
 _C.DEBUG = False # debug mode
 _C.TFBOARD = False
 _C.FINETUNE = False

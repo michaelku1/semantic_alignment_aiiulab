@@ -33,7 +33,8 @@ class DeformableTransformer(nn.Module):
                  activation="relu", return_intermediate_dec=False,
                  num_feature_levels=4, dec_n_points=4,  enc_n_points=4,
                  two_stage=False, two_stage_num_proposals=300,
-                 space_align=False, channel_align=False, instance_align=False, debug=True):
+                 space_align=False, channel_align=False, instance_align=False,
+                 gradient_checkpoint=False, debug=True):
         super().__init__()
 
         self.d_model = d_model
@@ -49,13 +50,15 @@ class DeformableTransformer(nn.Module):
 
         encoder_layer = DeformableTransformerEncoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
-                                                          num_feature_levels, nhead, enc_n_points, space_align, channel_align)
+                                                          num_feature_levels, nhead, enc_n_points, space_align, channel_align,
+                                                          gradient_checkpoint=gradient_checkpoint)
 
         self.encoder = DeformableTransformerEncoder(encoder_layer, num_encoder_layers)
 
         decoder_layer = DeformableTransformerDecoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
-                                                          num_feature_levels, nhead, dec_n_points, instance_align)
+                                                          num_feature_levels, nhead, dec_n_points, instance_align,
+                                                          gradient_checkpoint=gradient_checkpoint)
         self.decoder = DeformableTransformerDecoder(decoder_layer, num_decoder_layers, return_intermediate_dec)
 
         self.level_embed = nn.Parameter(torch.Tensor(num_feature_levels, d_model))
@@ -80,7 +83,8 @@ class DeformableTransformer(nn.Module):
             self.instance_query = nn.Parameter(torch.empty(1, 1, d_model))
 
         self._reset_parameters()
-
+        
+        self.gradient_checkpoint = gradient_checkpoint
         self.debug = debug
 
     def _reset_parameters(self):
@@ -320,7 +324,8 @@ class DeformableTransformerEncoderLayer(nn.Module):
                  d_model=256, d_ffn=1024,
                  dropout=0.1, activation="relu",
                  n_levels=4, n_heads=8, n_points=4,
-                 space_align=False, channel_align=False):
+                 space_align=False, channel_align=False,
+                 gradient_checkpoint=False):
         super().__init__()
 
         self.space_align = space_align
@@ -344,13 +349,14 @@ class DeformableTransformerEncoderLayer(nn.Module):
         self.linear2 = nn.Linear(d_ffn, d_model)
         self.dropout3 = nn.Dropout(dropout)
         self.norm2 = nn.LayerNorm(d_model)
+        self.gradient_checkpoint = gradient_checkpoint
 
     @staticmethod
     def with_pos_embed(tensor, pos):
         return tensor if pos is None else tensor + pos
 
     def forward_ffn(self, src):
-        if src.requires_grad:
+        if src.requires_grad and self.gradient_checkpoint:
             def ffn_1(src):
                 return self.activation(self.linear1(src))
             def ffn_2(src2):
@@ -371,10 +377,12 @@ class DeformableTransformerEncoderLayer(nn.Module):
     # src will be updated in the i+1 layer
     def forward(self, src, space_query, channel_query, pos, reference_points, spatial_shapes, level_start_index, padding_mask=None):
         # self attention (updated in the direction opposite to the gradient)
-        def sa(src, pos, reference_points, spatial_shapes, level_start_index, padding_mask):
-            return self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
-        src2 = checkpoint(sa, src, pos, reference_points, spatial_shapes, level_start_index, padding_mask)
-        # src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
+        if src.requires_grad and self.gradient_checkpoint:
+            def sa(src, pos, reference_points, spatial_shapes, level_start_index, padding_mask):
+                return self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
+            src2 = checkpoint(sa, src, pos, reference_points, spatial_shapes, level_start_index, padding_mask)
+        else:
+            src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
         
         src = src + self.dropout1(src2)
         src = self.norm1(src)
@@ -529,7 +537,8 @@ class DeformableTransformerDecoderLayer(nn.Module):
     def __init__(self, d_model=256, d_ffn=1024,
                  dropout=0.1, activation="relu",
                  n_levels=4, n_heads=8, n_points=4,
-                 instance_align=False):
+                 instance_align=False,
+                 gradient_checkpoint=False):
         super().__init__()
 
         self.instance_align = instance_align
@@ -553,13 +562,14 @@ class DeformableTransformerDecoderLayer(nn.Module):
         self.linear2 = nn.Linear(d_ffn, d_model)
         self.dropout4 = nn.Dropout(dropout)
         self.norm3 = nn.LayerNorm(d_model)
+        self.gradient_checkpoint = gradient_checkpoint
 
     @staticmethod
     def with_pos_embed(tensor, pos):
         return tensor if pos is None else tensor + pos
 
     def forward_ffn(self, tgt):
-        if tgt.requires_grad:
+        if tgt.requires_grad and self.gradient_checkpoint:
             def ffn_1(tgt):
                 return self.activation(self.linear1(tgt))
             def ffn_2(tgt2):
@@ -688,4 +698,5 @@ def build_deforamble_transformer(cfg):
         space_align=cfg.MODEL.SPACE_ALIGN,
         channel_align=cfg.MODEL.CHANNEL_ALIGN,
         instance_align=cfg.MODEL.INSTANCE_ALIGN,
+        gradient_checkpoint=cfg.GRADIENT_CHECKPOINT,
         debug=cfg.DEBUG)
