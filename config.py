@@ -18,8 +18,8 @@ _C.TRAIN.WEIGHT_DECAY = 1e-4
 _C.TRAIN.EPOCHS = 50
 _C.TRAIN.LR_DROP = 40
 _C.TRAIN.LR_DROP_EPOCHS = None
-_C.TRAIN.CLIP_MAX_NORM = 0.1 # gradient clipping max norm
-_C.TRAIN.SGD = False # AdamW is used when setting this false
+_C.TRAIN.CLIP_MAX_NORM = 0.1  # gradient clipping max norm
+_C.TRAIN.SGD = False  # AdamW is used when setting this false
 
 
 # ------------------------------------------------------------------------
@@ -32,28 +32,28 @@ _C.MODEL.WITH_BOX_REFINE = False
 _C.MODEL.TWO_STAGE = False
 
 # Model parameters
-_C.MODEL.FROZEN_WEIGHTS = None # Path to the pretrained model. If set, only the mask head will be trained
+_C.MODEL.FROZEN_WEIGHTS = None  # Path to the pretrained model. If set, only the mask head will be trained
 
 # * Backbone
-_C.MODEL.BACKBONE = 'resnet50' # Name of the convolutional backbone to use
-_C.MODEL.DILATION = False # If true, we replace stride with dilation in the last convolutional block (DC5)
-_C.MODEL.POSITION_EMBEDDING = 'sine' # ('sine', 'learned') Type of positional embedding to use on top of the image features
-_C.MODEL.POSITION_EMBEDDING_SCALE = 2 * pi # position / size * scale
-_C.MODEL.NUM_FEATURE_LEVELS = 4 # number of feature levels
+_C.MODEL.BACKBONE = 'resnet50'  # Name of the convolutional backbone to use
+_C.MODEL.DILATION = False  # If true, we replace stride with dilation in the last convolutional block (DC5)
+_C.MODEL.POSITION_EMBEDDING = 'sine'  # ('sine', 'learned') Type of positional embedding to use on top of the image features
+_C.MODEL.POSITION_EMBEDDING_SCALE = 2 * pi  # position / size * scale
+_C.MODEL.NUM_FEATURE_LEVELS = 4  # number of feature levels
 
 # * Transformer
-_C.MODEL.ENC_LAYERS = 6 # Number of encoding layers in the transformer
-_C.MODEL.DEC_LAYERS = 6 # Number of decoding layers in the transformer
-_C.MODEL.DIM_FEEDFORWARD = 1024 # Intermediate size of the feedforward layers in the transformer blocks
-_C.MODEL.HIDDEN_DIM = 256 # Size of the embeddings (dimension of the transformer)
-_C.MODEL.DROPOUT = 0.1 # Dropout applied in the transformer
-_C.MODEL.NHEADS = 8 # Number of attention heads inside the transformer's attentions
-_C.MODEL.NUM_QUERIES = 300 # Number of query slots
+_C.MODEL.ENC_LAYERS = 6  # Number of encoding layers in the transformer
+_C.MODEL.DEC_LAYERS = 6  # Number of decoding layers in the transformer
+_C.MODEL.DIM_FEEDFORWARD = 1024  # Intermediate size of the feedforward layers in the transformer blocks
+_C.MODEL.HIDDEN_DIM = 256  # Size of the embeddings (dimension of the transformer)
+_C.MODEL.DROPOUT = 0.1  # Dropout applied in the transformer
+_C.MODEL.NHEADS = 8  # Number of attention heads inside the transformer's attentions
+_C.MODEL.NUM_QUERIES = 300  # Number of query slots
 _C.MODEL.DEC_N_POINTS = 4
 _C.MODEL.ENC_N_POINTS = 4
 
 # * Segmentation
-_C.MODEL.MASKS = False # Train segmentation head if the flag is provided
+_C.MODEL.MASKS = False  # Train segmentation head if the flag is provided
 
 # * Domain Adaptation
 _C.MODEL.BACKBONE_ALIGN = False
@@ -65,12 +65,12 @@ _C.MODEL.INSTANCE_ALIGN = False
 # Loss
 # ------------------------------------------------------------------------
 _C.LOSS = CN()
-_C.LOSS.AUX_LOSS = True # auxiliary decoding losses (loss at each layer)
+_C.LOSS.AUX_LOSS = True  # auxiliary decoding losses (loss at each layer)
 
 # * Matcher
-_C.LOSS.SET_COST_CLASS = 2. # Class coefficient in the matching cost
-_C.LOSS.SET_COST_BBOX = 5. # L1 box coefficient in the matching cost
-_C.LOSS.SET_COST_GIOU = 2. # giou box coefficient in the matching cost
+_C.LOSS.SET_COST_CLASS = 2.  # Class coefficient in the matching cost
+_C.LOSS.SET_COST_BBOX = 5.  # L1 box coefficient in the matching cost
+_C.LOSS.SET_COST_GIOU = 2.  # giou box coefficient in the matching cost
 
 # * Loss coefficients
 _C.LOSS.MASK_LOSS_COEF = 1.
@@ -90,8 +90,8 @@ _C.LOSS.DA_GAMMA = 0
 # dataset parameters
 # ------------------------------------------------------------------------
 _C.DATASET = CN()
-_C.DATASET.DA_MODE = 'source_only' # ('source_only', 'uda', 'oracle')
-_C.DATASET.NUM_CLASSES = 9 # This should be set as max_class_id + 1
+_C.DATASET.DA_MODE = 'source_only'  # ('source_only', 'uda', 'oracle')
+_C.DATASET.NUM_CLASSES = 9  # This should be set as max_class_id + 1
 _C.DATASET.DATASET_FILE = 'cityscapes_to_foggy_cityscapes'
 _C.DATASET.COCO_PATH = '../datasets'
 _C.DATASET.COCO_PANOPTIC_PATH = None
@@ -112,14 +112,15 @@ _C.DIST.DIST_BACKEND = None
 # ------------------------------------------------------------------------
 # Miscellaneous
 # ------------------------------------------------------------------------
-_C.OUTPUT_DIR = '' # path where to save, empty for no saving
-_C.DEVICE = 'cuda' # device to use for training / testing
+_C.OUTPUT_DIR = ''  # path where to save, empty for no saving
+_C.DEVICE = 'cuda'  # device to use for training / testing
 _C.SEED = 42
-_C.RESUME = '' # resume from checkpoint
-_C.START_EPOCH = 0 # start epoch
+_C.RESUME = ''  # resume from checkpoint
+_C.START_EPOCH = 0  # start epoch
 _C.EVAL = False
 _C.NUM_WORKERS = 2
-_C.CACHE_MODE = False # whether to cache images on memory
+_C.CACHE_MODE = False  # whether to cache images on memory
+_C.GRADIENT_CHECKPOINT = False
 
 # ------------------------------------------------------------------------
 # Plot box
@@ -127,7 +128,7 @@ _C.CACHE_MODE = False # whether to cache images on memory
 _C.PLOT = CN()
 _C.PLOT.PLOT_BBOX = False
 _C.PLOT.SCORE_THRESHOLD = 0.5
-_C.PLOT.IMG_IDS  = []
+_C.PLOT.IMG_IDS = []
 
 
 def get_cfg_defaults():

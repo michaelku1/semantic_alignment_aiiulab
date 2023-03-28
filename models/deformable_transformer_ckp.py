@@ -29,7 +29,8 @@ class DeformableTransformer(nn.Module):
                  activation="relu", return_intermediate_dec=False,
                  num_feature_levels=4, dec_n_points=4, enc_n_points=4,
                  two_stage=False, two_stage_num_proposals=300,
-                 space_align=False, channel_align=False, instance_align=False):
+                 space_align=False, channel_align=False, instance_align=False,
+                 gradient_checkpoint=False):
         super().__init__()
 
         self.d_model = d_model
@@ -40,17 +41,20 @@ class DeformableTransformer(nn.Module):
         self.space_align = space_align
         self.channel_align = channel_align
         self.instance_align = instance_align
+        self.gradient_checkpoint = gradient_checkpoint
 
         encoder_layer = DeformableTransformerEncoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
-                                                          num_feature_levels, nhead, enc_n_points, space_align, channel_align)
+                                                          num_feature_levels, nhead, enc_n_points, space_align, channel_align,
+                                                          gradient_checkpoint)
 
         self.encoder = DeformableTransformerEncoder(encoder_layer, num_encoder_layers)
         # num_encoder_layers = 6
 
         decoder_layer = DeformableTransformerDecoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
-                                                          num_feature_levels, nhead, dec_n_points, instance_align)
+                                                          num_feature_levels, nhead, dec_n_points, instance_align,
+                                                          gradient_checkpoint)
 
         self.decoder = DeformableTransformerDecoder(decoder_layer, num_decoder_layers, return_intermediate_dec)
         # num_decoder_layers = 6
@@ -275,7 +279,8 @@ class DeformableTransformerEncoderLayer(nn.Module):
                  d_model=256, d_ffn=1024,
                  dropout=0.1, activation="relu",
                  n_levels=4, n_heads=8, n_points=4,
-                 space_align=False, channel_align=False):
+                 space_align=False, channel_align=False,
+                 gradient_checkpoint=False):
         super().__init__()
 
         self.space_align = space_align
@@ -298,6 +303,8 @@ class DeformableTransformerEncoderLayer(nn.Module):
         self.dropout3 = nn.Dropout(dropout)
         self.norm2 = nn.LayerNorm(d_model)
 
+        self.gradient_checkpoint = gradient_checkpoint
+
     @staticmethod
     def with_pos_embed(tensor, pos):
         return tensor if pos is None else tensor + pos
@@ -306,7 +313,8 @@ class DeformableTransformerEncoderLayer(nn.Module):
         def inner_forward_e1(src):
             src2 = self.activation(self.linear1(src))
             return src2
-        if src.requires_grad:
+        
+        if src.requires_grad and self.gradient_checkpoint:
             src2 = checkpoint(inner_forward_e1, src)
         else:
             src2 = self.activation(self.linear1(src))
@@ -316,7 +324,8 @@ class DeformableTransformerEncoderLayer(nn.Module):
         def inner_forward_e2(src2):
             src2 = self.linear2(src2)
             return src2
-        if src2.requires_grad:
+        
+        if src2.requires_grad and self.gradient_checkpoint:
             src2 = checkpoint(inner_forward_e2, src2)
         else:
             src2 = self.linear2(src2)
@@ -333,10 +342,12 @@ class DeformableTransformerEncoderLayer(nn.Module):
         # padding_mask: (N, H_0W_0+...H_3W_3)
 
         # self attention
-        # src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
-        def sa(src, pos, reference_points, spatial_shapes, level_start_index, padding_mask):
-            return self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
-        src2 = checkpoint(sa, src, pos, reference_points, spatial_shapes, level_start_index, padding_mask)
+        if src.requires_grad and self.gradient_checkpoint:
+            def sa(src, pos, reference_points, spatial_shapes, level_start_index, padding_mask):
+                return self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
+            src2 = checkpoint(sa, src, pos, reference_points, spatial_shapes, level_start_index, padding_mask)
+        else:
+            src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
         
         # self_attn: q: src, k: src, v: src
         # self_attn: q: src, k: [src, source_domain_token, target_domain_token], v: [src, source_domain_token, target_domain_token]
@@ -425,7 +436,8 @@ class DeformableTransformerDecoderLayer(nn.Module):
     def __init__(self, d_model=256, d_ffn=1024,
                  dropout=0.1, activation="relu",
                  n_levels=4, n_heads=8, n_points=4,
-                 instance_align=False):
+                 instance_align=False,
+                 gradient_checkpoint=False):
         super().__init__()
 
         self.instance_align = instance_align
@@ -450,6 +462,8 @@ class DeformableTransformerDecoderLayer(nn.Module):
         self.dropout4 = nn.Dropout(dropout)
         self.norm3 = nn.LayerNorm(d_model)
 
+        self.gradient_checkpoint = gradient_checkpoint
+
     @staticmethod
     def with_pos_embed(tensor, pos):
         return tensor if pos is None else tensor + pos
@@ -458,7 +472,8 @@ class DeformableTransformerDecoderLayer(nn.Module):
         def inner_forward_d1(tgt):
             tgt2 = self.activation(self.linear1(tgt))
             return tgt2
-        if tgt.requires_grad:
+        
+        if tgt.requires_grad and self.gradient_checkpoint:
             tgt2 = checkpoint(inner_forward_d1, tgt)
         else:
             tgt2 = self.activation(self.linear1(tgt))
@@ -468,7 +483,8 @@ class DeformableTransformerDecoderLayer(nn.Module):
         def inner_forward_d2(tgt2):
             tgt2 = self.linear2(tgt2)
             return tgt2
-        if tgt2.requires_grad:
+        
+        if tgt2.requires_grad and self.gradient_checkpoint:
             tgt2 = checkpoint(inner_forward_d2, tgt2)
         else:
             tgt2 = self.linear2(tgt2)
@@ -612,4 +628,5 @@ def build_deforamble_transformer(cfg):
         two_stage_num_proposals=cfg.MODEL.NUM_QUERIES,
         space_align=cfg.MODEL.SPACE_ALIGN,
         channel_align=cfg.MODEL.CHANNEL_ALIGN,
-        instance_align=cfg.MODEL.INSTANCE_ALIGN)
+        instance_align=cfg.MODEL.INSTANCE_ALIGN,
+        gradient_checkpoint=cfg.GRADIENT_CHECKPOINT)
