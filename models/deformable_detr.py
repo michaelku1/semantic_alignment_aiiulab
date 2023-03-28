@@ -40,7 +40,8 @@ class DeformableDETR(nn.Module):
     """ This is the Deformable DETR module that performs object detection """
     def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels,
                  aux_loss=True, with_box_refine=False, two_stage=False,
-                 backbone_align=False, space_align=False, channel_align=False, instance_align=False):
+                 backbone_align=False, space_align=False, channel_align=False, instance_align=False,
+                 gradient_checkpoint=False):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -57,7 +58,7 @@ class DeformableDETR(nn.Module):
         self.transformer = transformer
         hidden_dim = transformer.d_model  # 256
         self.class_embed = nn.Linear(hidden_dim, num_classes)
-        self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3)  # output_dim = 4, #layer = 3
+        self.bbox_embed = MLP(hidden_dim, hidden_dim, 4, 3, gradient_checkpoint)  # output_dim = 4, #layer = 3
         self.num_feature_levels = num_feature_levels
         if not two_stage:
             self.query_embed = nn.Embedding(num_queries, hidden_dim * 2)
@@ -92,6 +93,7 @@ class DeformableDETR(nn.Module):
         self.space_align = space_align
         self.channel_align = channel_align
         self.instance_align = instance_align
+        self.gradient_checkpoint = gradient_checkpoint
 
         prior_prob = 0.01
         bias_value = -math.log((1 - prior_prob) / prior_prob)
@@ -122,22 +124,22 @@ class DeformableDETR(nn.Module):
                 nn.init.constant_(box_embed.layers[-1].bias.data[2:], 0.0)
         if backbone_align:
             self.grl = GradientReversal()
-            self.backbone_D = MLP(hidden_dim, hidden_dim, 1, 3)
+            self.backbone_D = MLP(hidden_dim, hidden_dim, 1, 3, gradient_checkpoint)
             for layer in self.backbone_D.layers:
                 nn.init.xavier_uniform_(layer.weight, gain=1)
                 nn.init.constant_(layer.bias, 0)
         if space_align:
-            self.space_D = MLP(hidden_dim, hidden_dim, 1, 3)
+            self.space_D = MLP(hidden_dim, hidden_dim, 1, 3, gradient_checkpoint)
             for layer in self.space_D.layers:
                 nn.init.xavier_uniform_(layer.weight, gain=1)
                 nn.init.constant_(layer.bias, 0)
         if channel_align:
-            self.channel_D = MLP(hidden_dim, hidden_dim, 1, 3)
+            self.channel_D = MLP(hidden_dim, hidden_dim, 1, 3, gradient_checkpoint)
             for layer in self.channel_D.layers:
                 nn.init.xavier_uniform_(layer.weight, gain=1)
                 nn.init.constant_(layer.bias, 0)
         if instance_align:
-            self.instance_D = MLP(hidden_dim, hidden_dim, 1, 3)
+            self.instance_D = MLP(hidden_dim, hidden_dim, 1, 3, gradient_checkpoint)
             for layer in self.instance_D.layers:
                 nn.init.xavier_uniform_(layer.weight, gain=1)
                 nn.init.constant_(layer.bias, 0)
@@ -575,12 +577,13 @@ class PostProcess(nn.Module):  # only use in eval
 class MLP(nn.Module):
     """ Very simple multi-layer perceptron (also called FFN)"""
 
-    def __init__(self, input_dim, hidden_dim, output_dim, num_layers):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers, gradient_checkpoint):
 
         super().__init__()
         self.num_layers = num_layers
         h = [hidden_dim] * (num_layers - 1)
         self.layers = nn.ModuleList(nn.Linear(n, k) for n, k in zip([input_dim] + h, h + [output_dim]))
+        self.gradient_checkpoint = gradient_checkpoint
 
     def forward(self, x):
         def mlp(x):
@@ -588,7 +591,11 @@ class MLP(nn.Module):
                 x = F.relu(layer(x)) if i < self.num_layers - 1 else layer(x)
             return x
         
-        x = torch.utils.checkpoint.checkpoint(mlp, x)
+        if x.requires_grad and self.gradient_checkpoint:
+            x = torch.utils.checkpoint.checkpoint(mlp, x)
+        else:
+            x = mlp(x)
+
         return x
 
 
@@ -610,7 +617,8 @@ def build(cfg):
         backbone_align=cfg.MODEL.BACKBONE_ALIGN,
         space_align=cfg.MODEL.SPACE_ALIGN,
         channel_align=cfg.MODEL.CHANNEL_ALIGN,
-        instance_align=cfg.MODEL.INSTANCE_ALIGN
+        instance_align=cfg.MODEL.INSTANCE_ALIGN,
+        gradient_checkpoint=cfg.GRADIENT_CHECKPOINT
     )
     if cfg.MODEL.MASKS:
         model = DETRsegm(model, freeze_detr=(cfg.MODEL.FROZEN_WEIGHTS is not None))
