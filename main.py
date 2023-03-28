@@ -386,12 +386,12 @@ def main(cfg):
             raise ValueError('missing resume model while finetune is on')
 
     if cfg.RESUME_MEMORY:
-        m_items_weights = torch.load(cfg.RESUME_MEMORY, map_location='cpu')
-        model_without_ddp.m_items.weight = m_items_weights
+        model_without_ddp.m_items = torch.load(cfg.RESUME_MEMORY, map_location='cpu')
+        print('loaded memory')
 
     if cfg.EVAL:
         test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,postprocessors_target,
-                                              data_loader_val, base_ds, device, cfg.OUTPUT_DIR, cfg, plot_bbox=cfg.PLOT.PLOT_BBOX, prefix='eval')
+                                              data_loader_val, base_ds, device, cfg, prefix='eval')
         if cfg.OUTPUT_DIR:
             utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
         return
@@ -469,7 +469,7 @@ def main(cfg):
                 }, checkpoint_path)
 
         test_stats, coco_evaluator = evaluate(
-            model, criterion, postprocessors, postprocessors_target, data_loader_val, base_ds, device, cfg.OUTPUT_DIR, cfg, plot_bbox=True, prefix=f'eval_epoch={epoch}'
+            model, criterion, postprocessors, postprocessors_target, data_loader_val, base_ds, device, cfg, prefix=f'eval_epoch={epoch}'
         )
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},

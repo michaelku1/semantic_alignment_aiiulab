@@ -146,8 +146,7 @@ def plot_bbox(
     prefix: Optional[str] = None
 ):
     box_save_dir = Path(box_save_dir)
-    if not box_save_dir.exists():
-        box_save_dir.mkdir()
+    box_save_dir.mkdir(parents=True, exist_ok=True)
 
     img_ids = img_ids if img_ids is not None else coco.getImgIds()
 
@@ -223,8 +222,7 @@ def plot_tgt_map(
     assert len(tgt_tensors) == len(tgt_res)
 
     map_save_dir = map_save_dir / prefix
-    if not map_save_dir.exists():
-        map_save_dir.mkdir(parents=True)
+    map_save_dir.mkdir(parents=True, exist_ok=True)
 
     img_ids = img_ids if img_ids is not None else coco.getImgIds()
 
@@ -244,7 +242,6 @@ def plot_tgt_map(
             img = img_tensor_to_cv2(img_tensor, normalized=True)
             img_copy = img.copy()
 
-            box_ids = tgt_map_out['box_ids']
             labels = tgt_map_out['box_labels']  # (#filtered_box,)
             boxes = tgt_map_out['box_xyxy']  # (#filtered_box, 4)
             score_map = tgt_map_out['score_map']  # (#filtered_box, #class, roi_h, roi_w)
@@ -256,27 +253,37 @@ def plot_tgt_map(
             save_path = map_save_dir / f'img-id={img_id}_bbox.png'
             cv2.imwrite(str(save_path), img_copy)
 
-            fig, axes = plt.subplots(len(boxes), 3)
-            axes = axes[None, :] if axes.ndim == 1 else axes
-            for row_axes, box, label, map, mask in zip(axes, boxes, labels, score_map, binary_mask):
-                x1, y1, x2, y2 = box.int().numpy()
-                x1 = max(x1, 0)
-                y1 = max(y1, 0)
-                crop = img[y1:y2, x1:x2, ::-1]  # (h, w, C)
+            if 0 < len(boxes) < 10:
+                fig, axes = plt.subplots(len(boxes), 3)
+                axes = axes[None, :] if axes.ndim == 1 else axes
+                for row_axes, box, label, map, mask in zip(axes, boxes, labels, score_map, binary_mask):
+                    x1, y1, x2, y2 = box.int().numpy()
+                    x1 = max(x1, 0)
+                    y1 = max(y1, 0)
+                    crop = img[y1:y2, x1:x2, ::-1]  # (h, w, C)
+                    
+                    try:
+                        row_axes[0].imshow(crop)
+                        row_axes[0].set_title(coco.cats[label]['name'])
+                        row_axes[0].set_axis_off()
 
-                row_axes[0].imshow(crop)
-                row_axes[0].set_title(coco.cats[label]['name'])
-                row_axes[0].set_axis_off()
+                        sns.heatmap(map[label - 1], ax=row_axes[1], square=True)
+                        row_axes[1].set_axis_off()
 
-                sns.heatmap(map[label - 1], ax=row_axes[1], square=True)
-                row_axes[1].set_axis_off()
-
-                row_axes[2].imshow(mask[label - 1])
-                row_axes[2].set_axis_off()
+                        row_axes[2].imshow(mask[label - 1])
+                        row_axes[2].set_axis_off()
+                    except:
+                        print('axes:')
+                        print(axes)
+                        print(axes.shape)
+                        print('row_axes:')
+                        print(row_axes)
+                        print(row_axes.shape)
+                        continue
             
-            file_name = f'img-id={img_id}_map.png'
-            save_path = map_save_dir / file_name
-            plt.savefig(str(save_path))
+                file_name = f'img-id={img_id}_map.png'
+                save_path = map_save_dir / file_name
+                plt.savefig(str(save_path))
 
 
 def img_tensor_to_cv2(img_tensor: torch.Tensor, normalized: bool = True) -> np.ndarray:

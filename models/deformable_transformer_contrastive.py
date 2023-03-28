@@ -371,8 +371,11 @@ class DeformableTransformerEncoderLayer(nn.Module):
     # src will be updated in the i+1 layer
     def forward(self, src, space_query, channel_query, pos, reference_points, spatial_shapes, level_start_index, padding_mask=None):
         # self attention (updated in the direction opposite to the gradient)
+        def sa(src, pos, reference_points, spatial_shapes, level_start_index, padding_mask):
+            return self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
+        src2 = checkpoint(sa, src, pos, reference_points, spatial_shapes, level_start_index, padding_mask)
+        # src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
         
-        src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
         src = src + self.dropout1(src2)
         src = self.norm1(src)
 

@@ -35,7 +35,7 @@ from .matcher import build_matcher
 from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
 from .deformable_transformer_contrastive import build_deforamble_transformer
-from .utils import GradientReversal, FCDiscriminator, CrossAttention_agg_prototypes, CrossAttention_agg_encoder
+from .utils import GradientReversal
 import copy
 from .memory_ema import Memory
 from .utils import compute_CV, weighted_aggregate, weighted_aggregate_tmp, find_thresh
@@ -64,10 +64,10 @@ class DeformableDETR(nn.Module):
             two_stage: two-stage Deformable DETR
         """
         super().__init__()
-        keep_rate = 0.996
+        
         # TODO: returns updated prototypes
-        if ema:
-            self.memory = Memory(num_classes, transformer.d_model, keep_rate = keep_rate, num_feature_levels=num_feature_levels)
+        # if ema:
+        #     self.memory = Memory(num_classes, transformer.d_model, keep_rate = keep_rate, num_feature_levels=num_feature_levels)
 
         self.cos = torch.nn.CosineSimilarity(dim=1, eps=1e-6)
         # self.classifier_prototypes = FCDiscriminator(num_classes, transformer.d_model)
@@ -76,7 +76,10 @@ class DeformableDETR(nn.Module):
         # self.cross_attn_dec = CrossAttention_agg_prototypes(transformer.d_model, transformer.nhead, 0.1)
         # self.cross_attn = CrossAttention_agg_encoder(transformer.d_model, transformer.nhead, 0.1)
         self.ema = ema
-        self.m_items = torch.full((2, num_classes-1, transformer.d_model), 1e-6).cuda()
+        self.memory = None
+        self.m_items = None
+        # self.m_items = torch.full((2, num_classes-1, transformer.d_model), 1e-6).cuda()
+        self.keep_rate = 0.996
 
         self.num_queries = num_queries
         self.transformer = transformer
@@ -205,10 +208,17 @@ class DeformableDETR(nn.Module):
             samples = nested_tensor_from_tensor_list(samples)
 
         features, pos = self.backbone(samples)
-
-        # TODO return first and last layers for single scale contrastive exp
-        # first_layer = features[0].tensors
-        # features = features[-1].tensors
+        """
+        If cfg.MODEL.NUM_FEATURE_LEVELS == 1, then
+            len(features) == 1
+            self.backbone.strides = [32]
+            self.backbone.num_channels = [2048]
+        
+        If cfg.MODEL.NUM_FEATURE_LEVELS > 1, then
+            len(features) == 3
+            self.backbone.strides = [8, 16, 32]
+            self.backbone.num_channels = [512, 1024, 2048]
+        """
 
         # store backbone features and mask tokens
         srcs = []
@@ -243,7 +253,7 @@ class DeformableDETR(nn.Module):
         if not self.two_stage:
             query_embeds = self.query_embed.weight # weights are the only things you need
         
-        hs, memory, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output, level_start_index = self.transformer(srcs, masks, pos, query_embeds)
+        hs, memory, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output = self.transformer(srcs, masks, pos, query_embeds)
         
         outputs_classes = []
         outputs_coords = []
@@ -329,12 +339,12 @@ class DeformableDETR(nn.Module):
                     if i not in self.proposal_levels:
                         continue
                     
-                    proposal_source_feats.append(feat)
+                    proposal_source_feats.append(feat.tensors)
             else:
                 raise ValueError('Unsupport proposal from')
 
             assert len(self.proposal_levels) == len(proposal_source_feats)
-            
+
             tgt_map_out = {
                 target['image_id'].item(): {
                     'box_ids': None,
@@ -434,7 +444,8 @@ class DeformableDETR(nn.Module):
             ### aggregate src prototypes
             list_of_src_prototype = []  # [scale], (num_classes, feat_dim)
             for roi_group in list_of_rois_src:
-                src_prototypes_enc, _ = weighted_aggregate_tmp(B, src_labels, roi_group, src_scores, None, self.num_classes, self.hidden_dim)
+                hidden_dim = roi_group[0].shape[-1]
+                src_prototypes_enc, _ = weighted_aggregate_tmp(B, src_labels, roi_group, src_scores, None, self.num_classes, hidden_dim)
                 list_of_src_prototype.append(src_prototypes_enc)
 
             src_prototypes_enc = torch.stack(list_of_src_prototype)  # (num_proposal_levels, num_classes, feat_dim)
@@ -449,7 +460,10 @@ class DeformableDETR(nn.Module):
                 # (scale, bs, class, feat_dim)
                 # if empty src targets, the corresponding elements are guaranteed to be zeros
                 if src_prototypes_enc[cls_idx].sum() == 0:
-                    src_prototypes_enc[cls_idx] = self.m_items[0, cls_idx, :].detach()
+                    if self.m_items is None:
+                        src_prototypes_enc[cls_idx] = torch.full((hidden_dim,), 1e-6).cuda()
+                    else:
+                        src_prototypes_enc[cls_idx] = self.m_items[0, cls_idx, :].detach()
 
             tgt_boxes = rescaled_boxes_enc[B//2:] # [bs] (,num_rois, 4)
             tgt_scores = list_of_scores_enc[B//2:] # [bs] (,num_rois)
@@ -522,7 +536,8 @@ class DeformableDETR(nn.Module):
                         tgt_label = tgt_labels[bs_i][roi_index]
                         binary_mask = binary_masks[roi_index, tgt_label-1,:,:] #  (7, 7)
                         binary_mask_bg = binary_masks_bg[roi_index, tgt_label-1,:,:]
-                        rois_target_tmp = rois_target.squeeze(0)[roi_index] # (256, 7, 7)
+                        # rois_target_tmp = rois_target.squeeze(0)[roi_index] # (256, 7, 7)  # FIXME: bug?
+                        rois_target_tmp = rois_target[roi_index] # (256, 7, 7)
                         filtered_rois_target = rois_target_tmp * binary_mask # (256, 7, 7)
                         filtered_rois_target_bg = rois_target_tmp * binary_mask_bg
                         mask_pooled = filtered_rois_target.mean(-1).mean(-1) # avg pool
@@ -579,8 +594,8 @@ class DeformableDETR(nn.Module):
             
             # TODO: calibrate scores
             for roi_scale_group, roi_scale_group_bg in zip(list_of_weighted_tgt_rois_final, list_of_weighted_tgt_rois_bg_final):
-                tgt_prototypes_enc, _ = weighted_aggregate_tmp(B, tgt_labels, roi_scale_group, tgt_scores, src_prototypes_enc, self.num_classes, self.hidden_dim)
-                tgt_prototypes_enc_bg, _ = weighted_aggregate_tmp(B, tgt_labels, roi_scale_group_bg, bg_tgt_scores, None, self.num_classes, self.hidden_dim) # (class_num, feat_dim)
+                tgt_prototypes_enc, _ = weighted_aggregate_tmp(B, tgt_labels, roi_scale_group, tgt_scores, src_prototypes_enc, self.num_classes, roi_scale_group[0].shape[-1])
+                tgt_prototypes_enc_bg, _ = weighted_aggregate_tmp(B, tgt_labels, roi_scale_group_bg, bg_tgt_scores, None, self.num_classes, roi_scale_group_bg[0].shape[-1]) # (class_num, feat_dim)
 
                 tgt_prototypes_enc_bg = tgt_prototypes_enc_bg.mean(0) # (, feat_dim)
                 tgt_prototypes_enc = F.normalize(tgt_prototypes_enc, dim=-1)
@@ -644,6 +659,10 @@ class DeformableDETR(nn.Module):
             
             prototypes_copy = prototypes.clone()
             if self.ema:
+                if self.memory is None:
+                    self.memory = Memory(self.num_classes, prototypes.shape[-1], self.keep_rate, self.num_feature_levels)
+                    self.m_items = torch.full((2, self.num_classes - 1, prototypes.shape[-1]), 1e-6).cuda()
+
                 new_memory = self.memory(self.m_items, prototypes)
                 self.m_items = new_memory
                 # updated_class_prototypes = new_memory
@@ -733,7 +752,8 @@ class DeformableDETR(nn.Module):
             # plt.close()
 
             # import pdb; pdb.set_trace()
-
+        
+        out = {}
         if self.training and self.uda:
             B = outputs_class.shape[1]
 
@@ -761,10 +781,12 @@ class DeformableDETR(nn.Module):
             if self.instance_align:
                 da_output['instance_query'] = self.instance_D(da_output['instance_query'])
         
-        out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
-        out['tgt_pred_logits'] = tgt_outputs_class[-1]
-        out['tgt_pred_boxes'] = tgt_outputs_coord[-1]
-        out['tgt_map_out'] = tgt_map_out
+            out['tgt_pred_logits'] = tgt_outputs_class[-1]
+            out['tgt_pred_boxes'] = tgt_outputs_coord[-1]
+            out['tgt_map_out'] = tgt_map_out
+        
+        out['pred_logits'] = outputs_class[-1]
+        out['pred_boxes'] = outputs_coord[-1]
 
         # TODO add prototypes to outputs
         if self.training:

@@ -187,7 +187,7 @@ def weighted_aggregate_tmp(batch_d, list_of_labels, list_of_rois, list_of_scores
         [cls_0, ..., cls_nonzeros]: labels of img_1,
     ]
     list_of_rois: [(#box_in_img_0, C), (#box_in_img_1, C), ...] under the specific scale
-    list_of_scores: []
+    list_of_scores: [(#box_in_img_0,), (#box_in_img_1,), ...]
     """
 
     B = batch_d // 2

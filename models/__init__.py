@@ -18,9 +18,9 @@
 # from .deformable_detr_contrastive_cross_scale import build
 
 # from .deformable_detr_contrastive_tgt_proposal_reweight import build
-# from .deformable_detr_contrastive_tgt_proposal_reweight_plot_map import build
+from .deformable_detr_contrastive_tgt_proposal_reweight_plot_map import build
 # from .deformable_detr_contrastive_tgt_proposal_reweight_william import build
-from .deformable_detr_contrastive_tgt_proposal_reweight_cross_scale_loss import build
+# from .deformable_detr_contrastive_tgt_proposal_reweight_cross_scale_loss import build
 
 # from .deformable_detr_contrastive_tgt_proposal_reweight_debug import build
 

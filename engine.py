@@ -83,6 +83,10 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     thresh_tmp_list = []
     missing_source = 0
     for iter_i in metric_logger.log_every(range(data_loader_len), print_freq, header):
+        # for debug
+        # if iter_i == 10:
+        #     break
+
         # if len(targets[0]['labels'])==0:
         #     import pdb; pdb.set_trace()
         #     outputs = model(samples, targets, cur_epoch, total_epoch)
@@ -273,7 +277,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         metric_logger.update(grad_norm=grad_total_norm)
 
         # ↓↓↓ plot pseudo boxes ↓↓↓
-        if kwargs['plot_bbox']:
+        if cfg.PLOT.PLOT_BBOX:
             B = len(targets)
             tgt_tensors = samples.tensors[B//2:]
             tgt_targets = targets[B//2:]
@@ -298,8 +302,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
 
         # ↓↓↓ plot proposal score map ↓↓↓
-        # import pdb; pdb.set_trace()
-        if kwargs['plot_map']:
+        if cfg.PLOT.PLOT_MAP:
             B = len(targets)
             tgt_targets = targets[B//2:]
             tgt_tensors = samples.tensors[B//2:]
@@ -339,7 +342,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 
 @torch.no_grad()
-def evaluate(model, criterion, postprocessors, postprocessors_target, data_loader, base_ds, device, output_dir, **kwargs):
+def evaluate(model, criterion, postprocessors, postprocessors_target, data_loader, base_ds, device, cfg, **kwargs):
     model.eval()
     criterion.eval()
 
@@ -358,7 +361,7 @@ def evaluate(model, criterion, postprocessors, postprocessors_target, data_loade
         panoptic_evaluator = PanopticEvaluator(
             data_loader.dataset.ann_file,
             data_loader.dataset.ann_folder,
-            output_dir=os.path.join(output_dir, "panoptic_eval"),
+            output_dir=os.path.join(cfg.OUTPUT_DIR, "panoptic_eval"),
         )
 
     for samples, targets in metric_logger.log_every(data_loader, 10, header):
@@ -431,11 +434,14 @@ def evaluate(model, criterion, postprocessors, postprocessors_target, data_loade
         res = {target['image_id'].item(): output for target, output in zip(targets, results)}
 
         # ↓↓↓ plot pseudo boxes ↓↓↓
-        if kwargs['plot_bbox']:
+        if cfg.PLOT.PLOT_BBOX:
+            tgt_tensors = samples.tensors
+            img_tensors = {target['image_id'].item(): output for target, output in zip(targets, tgt_tensors)}
+
             plot_bbox(
-                coco=coco_evaluator.coco_gt,
+                img_tensors=img_tensors,
                 res=res,
-                root_dir=data_loader.dataset.root,
+                coco=data_loader.dataset.coco,
                 box_save_dir=Path(cfg.OUTPUT_DIR) / 'plot_bbox',
                 score_threshold=cfg.PLOT.SCORE_THRESHOLD,
                 img_ids=cfg.PLOT.IMG_IDS,
@@ -444,18 +450,20 @@ def evaluate(model, criterion, postprocessors, postprocessors_target, data_loade
         # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
 
         # ↓↓↓ plot proposal score map ↓↓↓
-        if kwargs['plot_map']:
-            plot_tgt_map(
-                coco=data_loader.dataset.target.coco,
-                res=outputs['tgt_map_out'],
-                root_dir=data_loader.dataset.target.root,
-                map_save_dir=Path(cfg.OUTPUT_DIR) / 'plot_map',
-                img_ids=cfg.PLOT.IMG_IDS,
-                prefix=kwargs['prefix']
-            )
+        # if cfg.PLOT.PLOT_MAP:
+        #     tgt_tensors = samples.tensors
+        #     tgt_tensors = {target['image_id'].item(): output for target, output in zip(targets, tgt_tensors)}
+            
+        #     plot_tgt_map(
+        #         tgt_tensors=tgt_tensors,
+        #         tgt_res=res,
+        #         coco=data_loader.dataset.coco,
+        #         map_save_dir=Path(cfg.OUTPUT_DIR) / 'plot_map',
+        #         img_ids=cfg.PLOT.IMG_IDS,
+        #         prefix=kwargs['prefix']
+        #     )
         # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
 
-        # import pdb; pdb.set_trace()
         if coco_evaluator is not None:
             coco_evaluator.update(res)
 
