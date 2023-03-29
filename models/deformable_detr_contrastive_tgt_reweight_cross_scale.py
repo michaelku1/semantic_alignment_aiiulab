@@ -574,12 +574,14 @@ class DeformableDETR(nn.Module):
                     # confidence to get the corresponding mask
                     filtered_rois_target_list = [] # [num_rois] (,256)
                     filtered_rois_bg_target_list = [] # [num_rois] (,256)
+
+                    # breakpoint()
                     # filter each roi with the binary mask
                     for roi_index in range(rois_target.shape[0]):
                         tgt_label = tgt_labels[bs_i][roi_index]
                         binary_mask = binary_masks[roi_index, tgt_label-1,:,:] #  (7, 7)
                         binary_mask_bg = binary_masks_bg[roi_index, tgt_label-1,:,:]
-                        rois_target_tmp = rois_target.squeeze(0)[roi_index] # (256, 7, 7)７
+                        rois_target_tmp = rois_target[roi_index] # (1, 256, 7, 7)
                         filtered_rois_target = rois_target_tmp * binary_mask # (256, 7, 7)
                         filtered_rois_target_bg = rois_target_tmp * binary_mask_bg
                         mask_pooled = filtered_rois_target.mean(-1).mean(-1) # avg pool
@@ -1251,32 +1253,40 @@ class SetCriterion(nn.Module):
         # print(output)
 
         return output
-    
-    def contrastive_loss_cross_scale(self, source, target, bg_proto, alpha_values, margin=1):
+
+    # NOTE normal contrastive loss
+    def contrastive_loss(self, source, target, bg_proto, alpha_values, margin=1):
         """
+        intra-scale loss (refer to https://arxiv.org/pdf/2203.13409.pdf) used
+        complementarily with the cross-scale losses, all four scales are used
+        for cityscapes dataset
+
         source: (scale, class_num, feat_dim)
         target: (scale, class_num, feat_dim)
         bg_proto: (scale, 256)
         """
 
         # breakpoint()
-        intra_loss = 0.
-        inter_loss = 0.
-        intra_cross_scale = 0.
-        inter_cross_scale = 0.
+        # intra_loss = 0.
+        # inter_loss = 0.
+        # intra_cross_scale = 0.
+        # inter_cross_scale = 0.
 
         # bg_loss = 0.
 
         # target.register_hook(lambda grad: print(torch.isnan(grad).any()))
         # source.register_hook(lambda grad: print(torch.isnan(grad).any()))
 
-        # TODO try first and second last layer features 
+        # TODO try different scale combinations here
         source_prototypes = torch.index_select(source, 0, torch.tensor([0,2]).cuda())
         target_prototypes = torch.index_select(target, 0, torch.tensor([0,2]).cuda())
 
         # intra-scale loss (e.g original contrastive loss w/ multi-scale, so it's more like
         # a multi scale loss)
         for scale_i in range(source_prototypes.shape[0]):
+
+            intra_cross_scale = 0.
+            inter_cross_scale = 0.
 
             for cls_idx in range(self.num_classes-1):
                 tmp_src_feat_1 = source_prototypes[scale_i][cls_idx, :] # per class prototype
@@ -1300,87 +1310,61 @@ class SetCriterion(nn.Module):
 
                     ### original implementation
                     # breakpoint()
-                    inter_loss =  inter_loss + ((margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2)),torch.tensor(0).float().cuda())
+                    inter_cross_scale =  inter_cross_scale + ((margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2)),torch.tensor(0).float().cuda())
 
-                    inter_loss =  inter_loss + ((margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),torch.tensor(0).float().cuda())
+                    inter_cross_scale =  inter_cross_scale + ((margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),torch.tensor(0).float().cuda())
 
-                    inter_loss =  inter_loss + ((margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),torch.tensor(0).float().cuda())
+                    inter_cross_scale =  inter_cross_scale + ((margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),torch.tensor(0).float().cuda())
 
-                    inter_loss =  inter_loss + ((margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),torch.tensor(0).float().cuda())
+                    inter_cross_scale =  inter_cross_scale + ((margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),torch.tensor(0).float().cuda())
 
-                    # NOTE: 
-                    # inter_loss =  inter_loss + torch.pow(
-                    # (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin,
-                    # 2) * torch.pow(
-                    # torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2)),
-                    #           torch.tensor(0).float().cuda()), 2.0)
+        intra_loss = intra_loss / source.shape[1] # average over class dim
+        inter_loss = inter_loss / (source.shape[1] * (source.shape[1] - 1) * 2)
 
-                    # inter_loss =  inter_loss + torch.pow(
-                    #     (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2))) / margin,
-                    #     2) * torch.pow(
-                    #     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),
-                    #             torch.tensor(0).float().cuda()), 2.0)
+        return intra_loss.cuda(), inter_loss.cuda()
 
-                    # inter_loss =  inter_loss + torch.pow(
-                    #     (margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2))) / margin,
-                    #     2) * torch.pow(
-                    #     torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),
-                    #             torch.tensor(0).float().cuda()), 2.0)
+    # NOTE: cross scale
+    def contrastive_loss_cross_scale(self, source, target, bg_proto, alpha_values, margin=1):
+        """
+        source: (scale, class_num, feat_dim)
+        target: (scale, class_num, feat_dim)
+        bg_proto: (scale, 256)
+        """
 
-                    # inter_loss =  inter_loss + torch.pow(
-                    #     (margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2))) / margin,
-                    #     2) * torch.pow(
-                    #     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
-                    #             torch.tensor(0).float().cuda()), 2.0)
+        # target.register_hook(lambda grad: print(torch.isnan(grad).any()))
+        # source.register_hook(lambda grad: print(torch.isnan(grad).any()))
 
+        # TODO try different scale combinations here
+        source_prototypes_13 = torch.index_select(source, 0, torch.tensor([0,2]).cuda())
+        target_prototypes_13 = torch.index_select(target, 0, torch.tensor([0,2]).cuda())
 
-        cross_scale = [torch.stack([source_prototypes[0], target_prototypes[1]]),
-        torch.stack([source_prototypes[1], target_prototypes[0]])] 
-        
-        # cross-scale loss (the actual cross-scale loss term)
-        for scale_i in range(len(cross_scale)):
-            source_prototypes = cross_scale[scale_i][0]
-            target_prototypes = cross_scale[scale_i][1]
+        source_prototypes_14 = torch.index_select(source, 0, torch.tensor([0,3]).cuda())
+        target_prototypes_14 = torch.index_select(target, 0, torch.tensor([0,3]).cuda())
 
-            # breakpoint()
-            for cls_idx in range(self.num_classes-1):
-                source_cls_scale_i_tmp_1 = source_prototypes[cls_idx,:]
-                target_cls_scale_i_tmp_1 = target_prototypes[cls_idx,:]
+        # one scale pair
+        cross_scale_13 = [torch.stack([source_prototypes_13[0], target_prototypes_13[1]]),
+        torch.stack([source_prototypes_13[1], target_prototypes_13[0]])] 
 
-                intra_cross_scale = intra_cross_scale + torch.sqrt(self.distance(source_cls_scale_i_tmp_1, target_cls_scale_i_tmp_1))
-                
-                for cls_idx_next in range(cls_idx+1, self.num_classes-1):
-                    source_cls_scale_i_tmp_2 = source_prototypes[cls_idx_next,:]
-                    target_cls_scale_i_tmp_2 = target_prototypes[cls_idx_next,:]
-
-                    inter_cross_scale =  inter_cross_scale + ((margin - torch.sqrt(self.distance(source_cls_scale_i_tmp_1, source_cls_scale_i_tmp_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2)),torch.tensor(0).float().cuda())
-
-                    inter_cross_scale =  inter_cross_scale + ((margin - torch.sqrt(self.distance(target_cls_scale_i_tmp_1, target_cls_scale_i_tmp_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_tgt_feat_2)),torch.tensor(0).float().cuda())
-
-                    inter_cross_scale =  inter_cross_scale + ((margin - torch.sqrt(self.distance(source_cls_scale_i_tmp_1, target_cls_scale_i_tmp_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_tgt_feat_2)),torch.tensor(0).float().cuda())
-
-                    inter_cross_scale =  inter_cross_scale + ((margin - torch.sqrt(self.distance(target_cls_scale_i_tmp_1, source_cls_scale_i_tmp_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),torch.tensor(0).float().cuda())
-        
+        cross_scale_14 = [torch.stack([source_prototypes_14[0], target_prototypes_14[1]]),
+        torch.stack([source_prototypes_14[1], target_prototypes_14[0]])]
 
         # breakpoint()
-        intra_cross_scale = intra_cross_scale / source_prototypes.shape[0]
-        intra_loss = intra_loss / source.shape[1] # average over class dim
+        # two scale pairs
+        loss_13 = self.pair_loss(cross_scale_13)
+        loss_14 = self.pair_loss(cross_scale_14)
 
-        # bg_loss = bg_loss /source.shape[1]
+        losses = [loss_13_ + loss_14_ for loss_13_, loss_14_ in zip(loss_13, loss_14)]
 
-        # combinations between each class for two domains
-        # at the end of iteration the there is one "next class" being left off, thus -1
-        inter_cross_scale = inter_cross_scale / (source_prototypes.shape[0] * (source_prototypes.shape[0] - 1) * 2)
-        inter_loss = inter_loss / (source.shape[1] * (source.shape[1] - 1) * 2)
-        
+        # cross_scale_weight = torch.tensor([0.1, 0.1]).cuda()
+
         # print(intra_loss)
         # print(inter_loss)
 
-        if not torch.is_tensor(intra_loss):
-            intra_loss = torch.as_tensor(intra_loss)
+        # if not torch.is_tensor(intra_loss):
+        #     intra_loss = torch.as_tensor(intra_loss)
         
-        if not torch.is_tensor(inter_loss):
-            inter_loss = torch.as_tensor(inter_loss)
+        # if not torch.is_tensor(inter_loss):
+        #     inter_loss = torch.as_tensor(inter_loss)
 
         # if not torch.is_tensor(bg_loss):
         #     inter_loss = torch.as_tensor(bg_loss)
@@ -1390,52 +1374,40 @@ class SetCriterion(nn.Module):
         
         # inter_loss = torch.tensor(0.)
         # intra_loss = torch.tensor(0.)
+        # inter_cross_scale = torch.tensor(0.)
+        # intra_cross_scale = torch.tensor(0.)
+
         # if isinstance(intra_loss, float) or isinstance(inter_loss, float):
         #     import pdb; pdb.set_trace()
 
         # return intra_loss.cuda(), inter_loss.cuda(), bg_loss.cuda()
-        return intra_loss.cuda(), inter_loss.cuda(), intra_cross_scale.cuda(), inter_cross_scale.cuda()
+        intra_cross_scale_loss, inter_cross_scale_loss = losses
+        
+        return intra_cross_scale_loss.cuda(), inter_cross_scale_loss.cuda()
 
-    def two_scales_loss(self, source, target, exp_mode='m_only', *args):
-        """
-        wrapper for contrastive loss, adapt to multi scale training
-        with pre-defined scale pairs (refer to https://arxiv.org/pdf/2203.13409.pdf)
-        """
+        # return intra_loss.cuda(), inter_loss.cuda(), intra_cross_scale.cuda(), inter_cross_scale.cuda()
 
-        if exp_mode == 'm_only':
-            raise NotImplementedError
-
-        elif exp_mode == 'c_m':
-            # first and third scale
-            source_prototypes = torch.index_select(source, 0, torch.tensor([0,2]).cuda())
-            target_prototypes = torch.index_select(target, 0, torch.tensor([0,2]).cuda())
-
-            cross_scale = [torch.stack([source_prototypes[0], target_prototypes[1]]),
-            torch.stack([source_prototypes[1], target_prototypes[0]])]
-
-            # NOTE contrative accepts single source and tgt prototypes for inputs
-            self.contrastive_loss(source_prototypes[0], target_prototypes[0], *args)
-            self.contrastive_loss(source_prototypes[1], target_prototypes[1], *args)
-            self.contrastive_loss(source_prototypes[0], target_prototypes[1], *args)
-            self.contrastive_loss(source_prototypes[1], target_prototypes[0], *args)
-
-        elif exp_mode == 'c_only':
-            raise NotImplementedError
-
-    def contrastive_loss(self, source, target, bg_proto, alpha_values, margin=1):
+    # NOTE: multi scale
+    def contrastive_loss_multi_scale(self, source, target, bg_proto, alpha_values, margin=1):
         """
         source: (scale, class_num, feat_dim)
         target: (scale, class_num, feat_dim)
         bg_proto: (scale, 256)
         """
 
-        intra_loss = 0.
-        inter_loss = 0.
+        # intra_loss = 0.
+        # inter_loss = 0.
         # bg_loss = 0.
 
+        inter_losses = []
+        intra_losses = []
         # target.register_hook(lambda grad: print(torch.isnan(grad).any()))
         # source.register_hook(lambda grad: print(torch.isnan(grad).any()))
         for scale_i in range(source.shape[0]):
+
+            intra_loss = 0.
+            inter_loss = 0.
+
             # TODO for initial source and target zero entries, 
             for cls_idx in range(self.num_classes-1):
                 tmp_src_feat_1 = source[scale_i][cls_idx, :] # per class prototype
@@ -1491,22 +1463,37 @@ class SetCriterion(nn.Module):
                     #     torch.max(margin - torch.sqrt(self.distance(tmp_tgt_feat_1, tmp_src_feat_2)),
                     #             torch.tensor(0).float().cuda()), 2.0)
 
-        intra_loss = intra_loss / source.shape[1] # average over class dim
+            inter_losses.append(inter_loss)
+            intra_losses.append(intra_loss)
+        
+        intra_losses = [loss/source.shape[1] for loss in intra_losses]
+
+        # intra_loss = intra_loss / source.shape[1] # average over class dim
 
         # bg_loss = bg_loss /source.shape[1]
 
         # combinations between each class for two domains
         # at the end of iteration the there is one "next class" being left off, thus -1
-        inter_loss = inter_loss / (source.shape[1] * (source.shape[1] - 1) * 2)
+        # inter_loss = inter_loss / (source.shape[1] * (source.shape[1] - 1) * 2)
+        inter_losses = [loss/(source.shape[1] * (source.shape[1] - 1) * 2) for loss in inter_losses]
         
+        scale_weight_dict = [1.0, 0.7, 0.4, 0.1]
+        scale_weight_dict = [torch.tensor(weight).cuda() for weight in scale_weight_dict]
+        
+        scaled_inter_loss = [weight * loss for weight, loss in zip(scale_weight_dict, inter_losses)]
+        scaled_intra_loss = [weight * loss for weight, loss in zip(scale_weight_dict, intra_losses)]
+
+        intra_loss_weighted = sum(scaled_intra_loss)
+        inter_loss_weighted = sum(scaled_inter_loss)
+
         # print(intra_loss)
         # print(inter_loss)
 
-        if not torch.is_tensor(intra_loss):
-            intra_loss = torch.as_tensor(intra_loss)
+        if not torch.is_tensor(intra_loss_weighted):
+            intra_loss_weighted = torch.as_tensor(intra_loss_weighted)
         
-        if not torch.is_tensor(inter_loss):
-            inter_loss = torch.as_tensor(inter_loss)
+        if not torch.is_tensor(inter_loss_weighted):
+            inter_loss_weighted = torch.as_tensor(inter_loss_weighted)
 
         # if not torch.is_tensor(bg_loss):
         #     inter_loss = torch.as_tensor(bg_loss)
@@ -1520,14 +1507,82 @@ class SetCriterion(nn.Module):
         #     import pdb; pdb.set_trace()
 
         # return intra_loss.cuda(), inter_loss.cuda(), bg_loss.cuda()
-        return intra_loss.cuda(), inter_loss.cuda()
+        return intra_loss_weighted.cuda(), inter_loss_weighted.cuda()
+
+    # NOTE: pair loss for cross scale loss
+    def pair_loss(self, scale_pair, margin=1):
+
+        intra_cross_scale_loss = []
+        inter_cross_scale_loss = []
+
+        # cross-scale loss (the actual cross-scale loss term)
+        for scale_i in range(len(scale_pair)):
+            source_prototypes = scale_pair[scale_i][0]
+            target_prototypes = scale_pair[scale_i][1]
+
+            intra_cross_scale = 0.
+            inter_cross_scale = 0.
+
+            # breakpoint()
+            for cls_idx in range(self.num_classes-1):
+                source_cls_scale_i_tmp_1 = source_prototypes[cls_idx,:]
+                target_cls_scale_i_tmp_1 = target_prototypes[cls_idx,:]
+
+                intra_cross_scale = intra_cross_scale + torch.sqrt(self.distance(source_cls_scale_i_tmp_1, target_cls_scale_i_tmp_1))
+                
+                for cls_idx_next in range(cls_idx+1, self.num_classes-1):
+                    source_cls_scale_i_tmp_2 = source_prototypes[cls_idx_next,:]
+                    target_cls_scale_i_tmp_2 = target_prototypes[cls_idx_next,:]
+
+                    inter_cross_scale =  inter_cross_scale + ((margin - torch.sqrt(self.distance(source_cls_scale_i_tmp_1, source_cls_scale_i_tmp_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(source_cls_scale_i_tmp_1, source_cls_scale_i_tmp_2)),torch.tensor(0).float().cuda())
+
+                    inter_cross_scale =  inter_cross_scale + ((margin - torch.sqrt(self.distance(target_cls_scale_i_tmp_1, target_cls_scale_i_tmp_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(target_cls_scale_i_tmp_1, target_cls_scale_i_tmp_2)),torch.tensor(0).float().cuda())
+
+                    inter_cross_scale =  inter_cross_scale + ((margin - torch.sqrt(self.distance(source_cls_scale_i_tmp_1, target_cls_scale_i_tmp_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(source_cls_scale_i_tmp_1, target_cls_scale_i_tmp_2)),torch.tensor(0).float().cuda())
+
+                    inter_cross_scale =  inter_cross_scale + ((margin - torch.sqrt(self.distance(target_cls_scale_i_tmp_1, source_cls_scale_i_tmp_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(target_cls_scale_i_tmp_1, source_cls_scale_i_tmp_2)),torch.tensor(0).float().cuda())
+        
+            inter_cross_scale_loss.append(inter_cross_scale)
+            intra_cross_scale_loss.append(intra_cross_scale)
+
+        # cross_scale_weight = torch.tensor([0.1, 0.1]).cuda()
+
+        # breakpoint()
+
+        # intra_cross_scale = intra_cross_scale / source_prototypes.shape[0]
+
+        intra_cross_scale_loss = [loss / source_prototypes.shape[0] for loss in intra_cross_scale_loss]
+        # intra_loss = intra_loss / source.shape[1] # average over class dim
+
+        # bg_loss = bg_loss /source.shape[1]
+
+        # combinations between each class for two domains
+        # at the end of iteration the there is one "next class" being left off, thus -1
+        # inter_cross_scale = inter_cross_scale / (source_prototypes.shape[0] * (source_prototypes.shape[0] - 1) * 2)
+        inter_cross_scale_loss = [loss / (source_prototypes.shape[0] * (source_prototypes.shape[0] - 1) * 2) for loss in inter_cross_scale_loss]
+
+        # inter_loss = inter_loss / (source.shape[1] * (source.shape[1] - 1) * 2)
+        
+        # inter_cross_scale_loss= [loss*weight for loss, weight in zip(inter_cross_scale_loss, cross_scale_weight)]
+        # intra_cross_scale_loss= [loss*weight for loss, weight in zip(intra_cross_scale_loss, cross_scale_weight)]
+
+
+        inter_cross_scale_loss = sum(inter_cross_scale_loss)
+        intra_cross_scale_loss = sum(intra_cross_scale_loss)
+
+        intra_cross_scale_loss = intra_cross_scale_loss.cuda()
+        inter_cross_scale_loss = inter_cross_scale_loss.cuda()
+
+        return intra_cross_scale_loss, inter_cross_scale_loss
 
     def forward(self, outputs, targets, mode='train', scale='single'):
         # debugging mode not implemented yet
         if scale == 'single':
             losses = self.forward_single_scale(outputs, targets, mode=mode)
         elif scale == 'multi':
-            losses = self.forward_cross_scale(outputs, targets, mode=mode)
+            losses = self.forward_multi_scale_only(outputs, targets, mode=mode)
+        elif scale == 'multi_cross':
+            losses = self.forward_multi_cross_scale(outputs, targets, mode=mode)
         
         # breakpoint()
         return losses
@@ -1623,8 +1678,8 @@ class SetCriterion(nn.Module):
             alpha_values = outputs['prototypes_enc']['alpha_values']
             
             # with torch.autograd.set_detect_anomaly(True):
-            # intra_loss_enc, inter_loss_enc = self.contrastive_loss(source_enc, target_enc, bg_enc, alpha_values, margin = self.margin)
-            intra_loss_enc, inter_loss_enc, bg_loss = self.contrastive_loss(source_enc, target_enc, bg_enc, alpha_values, margin = self.margin)
+            intra_loss_enc, inter_loss_enc = self.contrastive_loss(source_enc, target_enc, bg_enc, alpha_values, margin = self.margin)
+            # intra_loss_enc, inter_loss_enc, bg_loss = self.contrastive_loss(source_enc, target_enc, bg_enc, alpha_values, margin = self.margin)
 
             # import pdb; pdb.set_trace()
             # losses['bg_loss'] = bg_loss
@@ -1655,8 +1710,130 @@ class SetCriterion(nn.Module):
         else:
             return losses
 
-    # NOTE call in forward
-    def forward_cross_scale(self, outputs, targets, mode='train'):
+    def forward_multi_scale_only(self, outputs, targets, mode='train'):
+        """ This performs the loss computation.
+        Parameters:
+             outputs: dict of tensors, see the output specification of the model for the format
+             targets: list of dicts, such that len(targets) == batch_size.
+                      The expected keys in each dict depends on the losses applied, see each loss' doc
+        """
+
+
+        outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
+        
+
+        # TODO we only want to load source targets
+        if mode == 'train':
+            targets = targets[:len(targets)//2] # use src only
+        elif mode == 'test':
+            pass
+        else:
+            raise NotImplementedError
+        
+
+        # Retrieve the matching between the outputs of the last layer and the targets
+        indices = self.matcher(outputs_without_aux, targets)
+
+        # Compute the average number of target boxes accross all nodes, for normalization purposes
+        num_boxes = sum(len(t["labels"]) for t in targets)
+        num_boxes = torch.as_tensor([num_boxes], dtype=torch.float, device=next(iter(outputs.values())).device)
+        if is_dist_avail_and_initialized():
+            torch.distributed.all_reduce(num_boxes)
+        num_boxes = torch.clamp(num_boxes / get_world_size(), min=1).item()
+
+        # Compute all the requested losses
+        losses = {}
+        for loss in self.losses:
+            kwargs = {}
+            losses.update(self.get_loss(loss, outputs, targets, indices, num_boxes, **kwargs))
+
+        # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
+        if 'aux_outputs' in outputs:
+            for i, aux_outputs in enumerate(outputs['aux_outputs']):
+                indices = self.matcher(aux_outputs, targets)
+                for loss in self.losses:
+                    if loss == 'masks':
+                        # Intermediate masks losses are too costly to compute, we ignore them.
+                        continue
+                    kwargs = {}
+                    if loss == 'labels':
+                        # Logging is enabled only for the last layer
+                        kwargs['log'] = False
+                    l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
+                    l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
+                    losses.update(l_dict)
+        
+        if 'enc_outputs' in outputs:
+            import pdb; pdb.set_trace()
+            enc_outputs = outputs['enc_outputs']
+            bin_targets = copy.deepcopy(targets)
+            for bt in bin_targets:
+                bt['labels'] = torch.zeros_like(bt['labels'])
+            indices = self.matcher(enc_outputs, bin_targets)
+            for loss in self.losses:
+                if loss == 'masks':
+                    # Intermediate masks losses are too costly to compute, we ignore them.
+                    continue
+                kwargs = {}
+                if loss == 'labels':
+                    # Logging is enabled only for the last layer
+                    kwargs['log'] = False
+                l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
+                l_dict = {k + f'_enc': v for k, v in l_dict.items()}
+                losses.update(l_dict)
+
+        if 'da_output' in outputs:
+            for k, v in outputs['da_output'].items():
+                losses[f'loss_{k}'] = self.loss_da(v, use_focal='query' in k)
+
+        if 'class_embeds' in outputs:
+            class_embeds = outputs['class_embeds']
+
+            # import pdb; pdb.set_trace()
+            losses[f'loss_category_token'] = self.category_token_align_loss(class_embeds)
+
+        if 'prototypes_enc' in outputs:
+            # source and target are lists of class prototypes
+            source_enc = outputs['prototypes_enc']['src_prototypes_enc']
+            target_enc = outputs['prototypes_enc']['tgt_prototypes_enc']
+            bg_enc = outputs['prototypes_enc']['tgt_prototypes_bg_enc']
+
+            alpha_values = outputs['prototypes_enc']['alpha_values']
+            
+            # with torch.autograd.set_detect_anomaly(True):
+            # intra_loss_enc, inter_loss_enc = self.contrastive_loss(source_enc, target_enc, bg_enc, alpha_values, margin = self.margin)
+            intra_loss_enc, inter_loss_enc = self.contrastive_loss_multi_scale(source_enc, target_enc, bg_enc, alpha_values, margin = self.margin)
+
+            # import pdb; pdb.set_trace()
+            # losses['bg_loss'] = bg_loss
+            losses['loss_intra_class_enc'] = intra_loss_enc
+            losses['loss_inter_class_enc'] = inter_loss_enc
+
+        if 'prototypes_dec' in outputs:
+            # source and target are lists of class prototypes
+            source_dec = outputs['prototypes_dec']['src_prototypes_dec']
+            target_dec = outputs['prototypes_dec']['tgt_prototypes_dec']
+            # alpha_values = outputs['alpha_values']
+            intra_loss_dec, inter_loss_dec = self.contrastive_loss(source_dec, target_dec, None, margin = self.margin)
+
+            losses['loss_intra_class_dec'] = intra_loss_dec
+            losses['loss_inter_class_dec'] = inter_loss_dec
+
+        # TODO aug loss here is used in place of ce loss computed here
+        if self.feat_aug:
+            mean_source = outputs['prototypes']['src_prototypes']
+            mean_target = outputs['prototypes']['tgt_prototypes']
+            aug_y = self.aug(mean_source, mean_target, outputs['fc'], outputs['features_source'], outputs['y_s'], outputs['source_labels'], outputs['covariance_target'], self.Lamda)
+            loss = self.cross_entropy(aug_y, torch.as_tensor(outputs['source_labels']))
+            losses[f'aug_loss'] = loss
+
+        # for debugging
+        if self.return_indices:
+            return losses, indices
+        else:
+            return losses
+
+    def forward_multi_cross_scale(self, outputs, targets, mode='train'):
         """ This performs the loss computation.
         Parameters:
              outputs: dict of tensors, see the output specification of the model for the format
@@ -1749,16 +1926,21 @@ class SetCriterion(nn.Module):
             # with torch.autograd.set_detect_anomaly(True):
             # intra_loss_enc, inter_loss_enc, \
             # intra_loss_enc_cross_scale, inter_loss_enc_cross_scale  = self.contrastive_loss(source_enc, target_enc, bg_enc, alpha_values, margin = self.margin)
+            
+            # multi-scale contrastive loss (NOTE: using contrastive_loss method for now)
+            intra_loss_enc_multi_scale, inter_loss_enc_multi_scale  = self.contrastive_loss_multi_scale(source_enc, target_enc, bg_enc, alpha_values, margin = self.margin)
 
-            # TODO to test for inter/intra scale ablation, comment out the loss computation in the 
-            # contrastive_loss_cross_scale function
-            intra_loss_enc, inter_loss_enc, \
+            # cross-scale contrastive loss
             intra_loss_enc_cross_scale, inter_loss_enc_cross_scale  = self.contrastive_loss_cross_scale(source_enc, target_enc, bg_enc, alpha_values, margin = self.margin)
 
     
             # losses['bg_loss'] = bg_loss
-            losses['loss_intra_class_enc'] = intra_loss_enc
-            losses['loss_inter_class_enc'] = inter_loss_enc
+            # losses['loss_intra_class_enc'] = intra_loss_enc
+            # losses['loss_inter_class_enc'] = inter_loss_enc
+
+            losses['loss_intra_class_enc'] = intra_loss_enc_multi_scale
+            losses['loss_inter_class_enc'] = inter_loss_enc_multi_scale
+
             losses['loss_intra_class_enc_cross_scale'] = intra_loss_enc_cross_scale
             losses['loss_inter_class_enc_cross_scale'] = inter_loss_enc_cross_scale
 
