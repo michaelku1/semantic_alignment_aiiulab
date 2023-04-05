@@ -788,23 +788,10 @@ class DeformableDETR(nn.Module):
         out['pred_logits'] = outputs_class[-1]
         out['pred_boxes'] = outputs_coord[-1]
 
-        # TODO add prototypes to outputs
         if self.training:
-            # src_prototypes_enc = updated_class_prototypes[0, :, :]
-            # tgt_prototypes_enc = updated_class_prototypes[1, :, :]
-            # src_prototypes_dec = class_embeds_dec[0]
-            # tgt_prototypes_dec = class_embeds_dec[1]
-
-            if len(thresh_tmp_list) > 0:
-                out['thresh_change_occurence'] = thresh_tmp_list
-
-            # NOTE: store ema memory items
             memory_prototypes = self.m_items.detach().clone()
             out['prototypes_enc'] = {'src_prototypes_enc': prototypes[0], 'tgt_prototypes_enc': prototypes[1], 'tgt_prototypes_bg_enc': tgt_prototypes_bg_enc,
                                     'memory_prototypes': memory_prototypes, 'alpha_values': source_alphas}
-            
-            # import pdb; pdb.set_trace()
-            # out['prototypes_dec'] = {'src_prototypes_dec': src_prototypes_dec, 'tgt_prototypes_dec': tgt_prototypes_dec}
 
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
@@ -816,8 +803,6 @@ class DeformableDETR(nn.Module):
         # discriminator outputs
         if self.training and self.uda:
             out['da_output'] = da_output
-            # TODO testing
-            out['thresh'] = thresh
 
         if self.debug:
             B = src.shape[0]
@@ -1175,12 +1160,55 @@ class SetCriterion(nn.Module):
     def distance(self, src_feat, tgt_feat):
         eps = 1e-6
         # BUG Function 'PowBackward0' returned nan values in its 0th output
-        output = torch.pow((src_feat - tgt_feat), 2.0).mean() + eps
+        return torch.pow((src_feat - tgt_feat), 2.0).mean() + eps  # FIXME: replace mean with sum
 
-        # print(output)
-
-        return output
+    def l2_distance(self, x, y):
+        assert x.ndim == y.ndim == 1, (x.ndim, y.ndim)
+        return torch.sqrt(((x - y) ** 2).sum() + 1e-8)
     
+    def hinge_loss(self, x, margin):
+        return torch.clamp(margin - x, min=0)
+
+    def contrastive_loss_william(self, source, target, bg_proto, alpha_values, margin=1):
+        """
+        source: (scale, class_num, feat_dim)
+        target: (scale, class_num, feat_dim)
+        bg_proto: (scale, 256)
+        """
+
+        intra_loss = source.new_tensor(0.0)
+        inter_loss = source.new_tensor(0.0)
+        bg_loss = source.new_tensor(0.0)
+
+        for cls_idx in range(self.num_classes - 1):
+            tmp_src_feat_1 = source[cls_idx, :]  # per class prototype
+            tmp_tgt_feat_1 = target[cls_idx, :]  # per class prototype
+            
+            # bg loss
+            # bg_loss += self.l2_distance(bg_proto, tmp_tgt_feat_1)
+
+            # intra
+            intra_loss += self.l2_distance(tmp_src_feat_1, tmp_tgt_feat_1)
+
+            # inter takes into account the current and all other classes
+            for cls_idx_next in range(cls_idx + 1, self.num_classes - 1):
+                tmp_src_feat_2 = source[cls_idx_next, :]  # (C,)
+                tmp_tgt_feat_2 = target[cls_idx_next, :]  # (C,)
+
+                ### original implementation
+                inter_loss += self.hinge_loss(self.l2_distance(tmp_src_feat_1, tmp_src_feat_2), margin)
+                inter_loss += self.hinge_loss(self.l2_distance(tmp_tgt_feat_1, tmp_tgt_feat_2), margin)
+                inter_loss += self.hinge_loss(self.l2_distance(tmp_src_feat_1, tmp_tgt_feat_2), margin)
+                inter_loss += self.hinge_loss(self.l2_distance(tmp_tgt_feat_1, tmp_src_feat_2), margin)
+
+        bg_loss = bg_loss / source.shape[0]  # average over all classes * batch_dim
+        intra_loss = intra_loss / source.shape[0]  # average over all classes * batch_dim
+
+        # combinations between each class for two domains
+        inter_loss = inter_loss / (source.shape[0] * (source.shape[0] - 1) / 2) # at the of the iteration the there will be one "next class" being left off
+        
+        return intra_loss, inter_loss, bg_loss
+
     def contrastive_loss(self, source, target, bg_proto, alpha_values, margin=1):
         """
         source: (scale, class_num, feat_dim)
@@ -1212,8 +1240,8 @@ class SetCriterion(nn.Module):
 
             # inter takes into account the current and all other classes
             for cls_idxdx_next in range(cls_idxdx+1, self.num_classes-1):
-                tmp_src_feat_2 = source[cls_idxdx_next, :]
-                tmp_tgt_feat_2 = target[cls_idxdx_next, :]
+                tmp_src_feat_2 = source[cls_idxdx_next, :]  # (C,)
+                tmp_tgt_feat_2 = target[cls_idxdx_next, :]  # (C,)
 
                 ### original implementation
                 inter_loss =  inter_loss + ((margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2))) / margin) *torch.max(margin - torch.sqrt(self.distance(tmp_src_feat_1, tmp_src_feat_2)),
@@ -1351,8 +1379,8 @@ class SetCriterion(nn.Module):
 
             alpha_values = outputs['prototypes_enc']['alpha_values']
             
-            # with torch.autograd.set_detect_anomaly(True):
-            intra_loss_enc, inter_loss_enc, bg_loss = self.contrastive_loss(source_enc, target_enc, bg_enc, alpha_values, margin = self.margin)
+            intra_loss_enc, inter_loss_enc, bg_loss = self.contrastive_loss(source_enc, target_enc, bg_enc, alpha_values, margin=self.margin)
+            # intra_loss_enc, inter_loss_enc, bg_loss = self.contrastive_loss_william(source_enc, target_enc, bg_enc, alpha_values, margin=self.margin)
 
             ### multi scale 
             # for s_i in range(len(source_enc)):

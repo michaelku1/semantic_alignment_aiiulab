@@ -91,7 +91,6 @@ def main(cfg):
     dataset_train = build_dataset(image_set='train', cfg=cfg)
     dataset_val = build_dataset(image_set='val', cfg=cfg)
 
-    
     # TODO sample subset for validation
     # indices = torch.randperm(len(dataset_val))[:200]
 
@@ -114,7 +113,6 @@ def main(cfg):
         data_loader_train = DataLoader(dataset_train, batch_sampler=batch_sampler_train,
                                        collate_fn=DAOD.collate_fn, num_workers=cfg.NUM_WORKERS,
                                        pin_memory=True)
-        
 
     else:
         batch_sampler_train = torch.utils.data.BatchSampler(sampler_train, cfg.TRAIN.BATCH_SIZE, drop_last=True)
@@ -125,8 +123,6 @@ def main(cfg):
     data_loader_val = DataLoader(dataset_val, cfg.TRAIN.BATCH_SIZE, sampler=sampler_val,
                                  drop_last=False, collate_fn=utils.collate_fn, num_workers=cfg.NUM_WORKERS,
                                  pin_memory=True)
-
-    
 
     # lr_backbone_names = ["backbone.0", "backbone.neck", "input_proj", "transformer.encoder"]
     def match_name_keywords(n, name_keywords):
@@ -158,18 +154,6 @@ def main(cfg):
             }
         ]
 
-        # trainable = []
-        # names = []
-        # # backbone is trained except the very first layer
-        # for n, p in model_without_ddp.named_parameters():
-        #     if match_name_keywords(n, ['backbone']):
-        #         trainable.append(p.requires_grad)
-        #         names.append(n)
-        # print(trainable)
-        # print(names)
-        # quit()
-
-    # TODO freeze everywhere except encoder
     elif cfg.MODEL.STAGE == 'train_encoder':
         trainable_layer = []
         # freeze all model parts except encoder
@@ -186,33 +170,7 @@ def main(cfg):
             if match_name_keywords(n, ['space_attn', 'channel_attn', 'space_D', 'channel_D']):
                 p.requires_grad_(False)
                 frozen_layer.append(n)
-
-        # trainable_before = []
-        # trainable_after = []
-        # names = []
-        # backbone is trained except the very first layer as in common practice
-        # for name, p in model_without_ddp.backbone.named_parameters():
-        #     if 'layer4' in name:
-        #         # trainable_before.append(p.requires_grad)
-        #         p.requires_grad_(True)
-                # trainable_after.append(p.requires_grad)
-                # names.append(n)
-
-        # print(names)
-        # print(trainable_before)
-        # print(trainable_after)
-        # quit()
-
-        # for n, p in model_without_ddp.named_parameters():
-        #     if match_name_keywords(n, ['instance_attn', 'instance_D']):
-        #         p.requires_grad_(False)
-        #         frozen_layer.append(n)
-
-        # print(trainable_layer)
-        print(frozen_layer)
-        # quit()
                 
-        # TODO everything else kept the same
         param_dicts = [
             {
                 "params":
@@ -229,13 +187,6 @@ def main(cfg):
                 "lr": cfg.TRAIN.LR * cfg.TRAIN.LR_LINEAR_PROJ_MULT,
             }
         ]
-
-            # if match_name_keywords(n, ['backbone']):
-            #     p.requires_grad_(False)
-
-            # TODO freeze domain classifier while retraining
-            # if match_name_keywords(n, ['space_D']) or match_name_keywords(n, ['instance_D']) or match_name_keywords(n, ['channel_D']):
-            #     p.requires_grad_(False)
 
     elif cfg.MODEL.STAGE == 'train_decoder':
         for n, p in model_without_ddp.named_parameters():
@@ -264,7 +215,6 @@ def main(cfg):
     else:
         raise ValueError('please specify training mode')
 
-    # import pdb; pdb.set_trace()
     if cfg.TRAIN.SGD:
         optimizer = torch.optim.SGD(param_dicts, lr=cfg.TRAIN.LR, momentum=0.9,
                                     weight_decay=cfg.TRAIN.WEIGHT_DECAY)
@@ -318,7 +268,6 @@ def main(cfg):
                 pg['lr'] = pg_old['lr'] # replace checkpoint lr with new lr
                 pg['initial_lr'] = pg_old['initial_lr']
 
-            print(optimizer.param_groups)
             lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
             # todo: this is a hack for doing experiment that resume from checkpoint and also modify lr scheduler (e.g., decrease lr in advance).
             override_resumed_lr_drop = True
@@ -436,10 +385,6 @@ def main(cfg):
                 model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS, total_iter,
                 base_ds, postprocessors, postprocessors_target, None, cfg.TRAIN.CLIP_MAX_NORM,
                 cfg=cfg, plot_bbox=cfg.PLOT.PLOT_BBOX, plot_map=cfg.PLOT.PLOT_MAP, prefix=f'train_epoch={epoch}')
-            
-        if 'thresh_change_occurence' in outputs:
-            (output_dir / 'thresh_change_occurence').mkdir(exist_ok=True)
-            torch.save(outputs['thresh_change_occurence'], output_dir / 'thresh_change_occurence'/ f'thresh_tmp_list_{epoch:04}.pt')
         
         if 'memory_prototypes' in outputs['prototypes_enc']:
             (output_dir / 'memory_prototypes').mkdir(exist_ok=True)
