@@ -44,6 +44,9 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     metric_logger.add_meter('grad_norm', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 1
+
+    if cfg.DATASET.RESAMPLING:
+        data_loader.dataset.resample()
     
     prefetcher = data_prefetcher(data_loader, device, prefetch=True)
     samples, targets = prefetcher.next() # samples have been transformed at this stage
@@ -343,6 +346,11 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
 @torch.no_grad()
 def evaluate(model, criterion, postprocessors, postprocessors_target, data_loader, base_ds, device, cfg, **kwargs):
+    """
+    data_loader.dataset: `CocoDetection`, not `DADataset`
+    base_ds: `pycocotools.coco.COCO`
+    """
+
     model.eval()
     criterion.eval()
 
@@ -352,9 +360,13 @@ def evaluate(model, criterion, postprocessors, postprocessors_target, data_loade
 
     iou_types = tuple(k for k in ('segm', 'bbox') if k in postprocessors.keys())
     coco_evaluator = CocoEvaluator(base_ds, iou_types)
+    coco_evaluators_per_class = {}
+    for cat_id in base_ds.getCatIds():
+        evaluator = CocoEvaluator(base_ds, iou_types)
+        for iou_type in iou_types:
+            evaluator.coco_eval[iou_type].params.catIds = [cat_id]
+        coco_evaluators_per_class[cat_id] = evaluator
     # coco_evaluator.coco_eval[iou_types[0]].params.iouThrs = [0, 0.1, 0.5, 0.75]
-    
-    # import pdb; pdb.set_trace()
 
     panoptic_evaluator = None
     if 'panoptic' in postprocessors.keys():
@@ -367,13 +379,8 @@ def evaluate(model, criterion, postprocessors, postprocessors_target, data_loade
     for samples, targets in metric_logger.log_every(data_loader, 10, header):
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-
         
         outputs = model(samples, None, None, None, None)
-
-        # breakpoint()
-
-        # import pdb; pdb.set_trace()
         loss_dict = criterion(outputs, targets, mode='test')
         weight_dict = criterion.weight_dict
 
@@ -466,6 +473,9 @@ def evaluate(model, criterion, postprocessors, postprocessors_target, data_loade
 
         if coco_evaluator is not None:
             coco_evaluator.update(res)
+        if coco_evaluators_per_class is not None:
+            for evaluator in coco_evaluators_per_class.values():
+                evaluator.update(res)
 
         if panoptic_evaluator is not None:
             res_pano = postprocessors["panoptic"](outputs, target_sizes, orig_target_sizes)
@@ -482,6 +492,9 @@ def evaluate(model, criterion, postprocessors, postprocessors_target, data_loade
     print("Averaged stats:", metric_logger)
     if coco_evaluator is not None:
         coco_evaluator.synchronize_between_processes()
+    if coco_evaluators_per_class is not None:
+        for evaluator in coco_evaluators_per_class.values():
+            evaluator.synchronize_between_processes()
     if panoptic_evaluator is not None:
         panoptic_evaluator.synchronize_between_processes()
 
@@ -489,6 +502,11 @@ def evaluate(model, criterion, postprocessors, postprocessors_target, data_loade
     if coco_evaluator is not None:
         coco_evaluator.accumulate()
         coco_evaluator.summarize()
+    if coco_evaluators_per_class is not None:
+        for evaluator in coco_evaluators_per_class.values():
+            evaluator.accumulate()
+            evaluator.summarize()
+
     panoptic_res = None
     if panoptic_evaluator is not None:
         panoptic_res = panoptic_evaluator.summarize()
@@ -496,6 +514,10 @@ def evaluate(model, criterion, postprocessors, postprocessors_target, data_loade
     if coco_evaluator is not None:
         if 'bbox' in postprocessors.keys():
             stats['coco_eval_bbox'] = coco_evaluator.coco_eval['bbox'].stats.tolist()
+            for cat_id, evaluator in coco_evaluators_per_class.items():
+                cat_name = base_ds.cats[cat_id]['name']
+                k = f'coco_eval_bbox_cat-id={cat_id}_cat-name={cat_name}'
+                stats[k] = evaluator.coco_eval['bbox'].stats.tolist()
         if 'segm' in postprocessors.keys():
             stats['coco_eval_masks'] = coco_evaluator.coco_eval['segm'].stats.tolist()
     if panoptic_res is not None:

@@ -121,7 +121,7 @@ _C.LOSS.SPACE_QUERY_LOSS_COEF = 0.1
 _C.LOSS.CHANNEL_QUERY_LOSS_COEF = 0.1
 _C.LOSS.INSTANCE_QUERY_LOSS_COEF = 0.1
 _C.LOSS.CATEGORY_QUERY_LOSS_COEF = 0.1
-_C.LOSS.MARGIN = 1
+_C.LOSS.MARGIN = 1.0
 
 # TODO for current implem.
 _C.LOSS.INTER_CLASS_COEF = 0.1
@@ -165,6 +165,7 @@ _C.DATASET.DATASET_FILE = 'cityscapes_to_foggy_cityscapes'
 _C.DATASET.COCO_PATH = '../datasets'
 _C.DATASET.COCO_PANOPTIC_PATH = None
 _C.DATASET.REMOVE_DIFFICULT = False
+_C.DATASET.RESAMPLING = False
 
 
 # ------------------------------------------------------------------------
