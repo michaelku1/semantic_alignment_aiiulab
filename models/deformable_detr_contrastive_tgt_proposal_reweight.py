@@ -38,7 +38,7 @@ from .deformable_transformer_contrastive import build_deforamble_transformer
 from .utils import GradientReversal, FCDiscriminator
 import copy
 from .memory_ema import Memory
-from .utils import compute_CV, weighted_aggregate, weighted_aggregate_multi_modal, find_thresh, attention_module_multi_head
+from .utils import compute_CV, weighted_aggregate, find_thresh, attention_module_multi_head, weighted_aggregate_multi_modal
 
 from .debug_tools import *
 
@@ -89,12 +89,12 @@ class DeformableDETR(nn.Module):
         # self.cross_attn = CrossAttention_agg_encoder(transformer.d_model, transformer.nhead, 0.1)
 
         self.ema = ema
-        self.m_items = nn.Parameter(torch.full((2, num_feature_levels, num_classes-1, transformer.d_model), 1e-6),
-                                                                        requires_grad=False).cuda()
-        # self.m_items = nn.Parameter(torch.zeros((2, num_feature_levels, num_classes-1, transformer.d_model)),
+        # self.m_items = nn.Parameter(torch.full((2,num_feature_levels, num_classes-1, transformer.d_model), 1e-6),
         #                                                                 requires_grad=False).cuda()
+        
+        self.m_items = nn.Parameter(torch.zeros((2, num_feature_levels, num_classes-1, transformer.d_model)),
+                                                                        requires_grad=False).cuda()
 
-        # torch.nn.init.trunc_normal_(self.m_items, std=0.02)
 
         # breakpoint()
         self.num_queries = num_queries
@@ -462,12 +462,20 @@ class DeformableDETR(nn.Module):
             src_scores = list_of_scores_enc[:B//2]
             src_labels = list_of_labels_enc[:B//2]
 
+            # TEST
+            # src_labels_delist = [label for src_label in src_labels for label in src_label]
+            # check_labels = [0, 8]
+            # for label in check_labels:
+            #     if label in src_labels_delist:
+            #         breakpoint()
+
+
             if len(srcs) > 1:
                 spatial_scales = [1/8.0, 1/16.0, 1/32.0, 1/64.0] # multi-scale
             else:
                 spatial_scales = [1/32.0] # single-scale
 
-            # breakpoint()
+
             list_of_rois_src = [] # [scale, bs] (num_boxes, 256)
             ### compute src rois first
             for m, scale in zip(memory_reshaped, spatial_scales):
@@ -480,36 +488,20 @@ class DeformableDETR(nn.Module):
 
                 list_of_rois_src.append(list_tmp)
 
-            # NOTE checked
+
             ### aggregate src prototypes
+            m_items = self.m_items[0] # (8, 5, 256)
             list_of_src_prototype = [] # [scale], (num_classes, feat_dim)
             for roi_group in list_of_rois_src:
                 # batch dim reduced after aggregation
                 # (e.g scale 1, bs 2 --> all reduced)
                 # (e.g scale 4, bs 2 --> 4, bs reduced)
-
                 src_prototypes_enc, _ = weighted_aggregate(B, src_labels, roi_group, src_scores, self.num_classes, None, self.hidden_dim)
-                
-                # src_prototypes_enc, _ =  weighted_aggregate_multi_modal(B, src_labels, roi_group, src_scores, self.num_classes, None, self.hidden_dim)
                 list_of_src_prototype.append(src_prototypes_enc)
             
 
             src_prototypes_enc = torch.stack(list_of_src_prototype) # (B, cls_num, feat_dim)
             src_prototypes_enc = F.normalize(src_prototypes_enc, dim=-1) # normalize
-
-            # breakpoint()
-            # src_prototypes_enc = src_prototypes_enc.mean(0) # average across batches (cls_num, feat_dim)
-
-            # 2. DEBUG: log prototype values
-
-            ### NOTE in case of empty soruce gts, we take src features from memory
-            for scale_i in range(src_prototypes_enc.shape[0]):
-                for cls_i in range(src_prototypes_enc.shape[1]):
-                    # (scale, bs, class, feat_dim)
-                    # if empty src targets, the corresponding elements are guaranteed to be zeros
-                    if src_prototypes_enc[scale_i][cls_i].sum() == 0:
-                        src_prototypes_enc[scale_i][cls_i] = self.m_items[0][scale_i][cls_i,:].detach()
-            
 
 
             ### NOTE in case of empty soruce gts, we take src features from memory
@@ -534,10 +526,29 @@ class DeformableDETR(nn.Module):
                     list_tmp.append(rois)
                 list_of_rois_tgt.append(list_tmp)
 
+            # breakpoint()
+
+            # sample from source prototypes to fill target prototypes
+            # we need to fill in source prototypes first since we need the corresponding prototypes
+            # for target feature selection
+            label_set_tgt = set([label for tgt_labels_ in tgt_labels for label in tgt_labels_])
+            label_set_src = set([label for src_labels_ in src_labels for label in src_labels_])
+
+            scale_len = len(src_prototypes_enc)
+            ## iterates through scales as well since we are training multi-scale
+            for scale_i in range(scale_len):
+                for label_tgt in label_set_tgt:
+                    if label_tgt in label_set_src:
+                        continue
+                    else:
+                        src_prototypes_enc[scale_i][label_tgt-1] = self.m_items[0][scale_i][label_tgt-1,:].detach()
+
+                # for cls_i in range(src_prototypes_enc.shape[1]):
+                #     if src_prototypes_enc[scale_i][cls_i].sum() == 0:
+                #         src_prototypes_enc[scale_i][cls_i] = self.m_items[0][scale_i][cls_i,:].detach()
 
             # 4. DEBUG: check tgt prototype attention
             # check_prototype_attention_map(B, src_prototypes_enc, memory_reshaped, tgt_boxes, targets)
-            # breakpoint()
 
             ### TODO estimate domain bias
             # domain_bias = self.m_items[1] - self.m_items[0]
@@ -563,7 +574,7 @@ class DeformableDETR(nn.Module):
                     filters = src_prototypes_enc[scale_i].squeeze(0).unsqueeze(-1).unsqueeze(-1) # (num_class, feat_dim, 1, 1)
                     
                     thresh_mask = 0.8
-                                        
+                    
                     scores = F.conv2d(rois_target, filters).sigmoid() # (num_rois, num_classes, 7, 7)
                     binary_masks = torch.where(scores>thresh_mask, 1, 0) # (num_rois, num_classes, 7, 7)
                     # background prototype
@@ -577,13 +588,14 @@ class DeformableDETR(nn.Module):
                     # confidence to get the corresponding mask
                     filtered_rois_target_list = [] # [num_rois] (,256)
                     filtered_rois_bg_target_list = [] # [num_rois] (,256)
+
+                    # breakpoint()
                     # filter each roi with the binary mask
-                    
                     for roi_index in range(rois_target.shape[0]):
                         tgt_label = tgt_labels[bs_i][roi_index]
                         binary_mask = binary_masks[roi_index, tgt_label-1,:,:] #  (7, 7)
                         binary_mask_bg = binary_masks_bg[roi_index, tgt_label-1,:,:]
-                        rois_target_tmp = rois_target.squeeze(0)[roi_index] # (256, 7, 7)７
+                        rois_target_tmp = rois_target[roi_index] # (1, 256, 7, 7)
                         filtered_rois_target = rois_target_tmp * binary_mask # (256, 7, 7)
                         filtered_rois_target_bg = rois_target_tmp * binary_mask_bg
                         mask_pooled = filtered_rois_target.mean(-1).mean(-1) # avg pool
@@ -694,23 +706,30 @@ class DeformableDETR(nn.Module):
             # class_embeds_enc = torch.stack(class_embeds_enc_list)
             # class_embeds_enc = class_embeds_enc.view(-1, *class_embeds_enc.shape[2:])
 
-            
             source_alphas = None
-            # NOTE only those classes with zero prototypes will be filled with memory items
+            # fill missing class features with memory features (src filled above)
             prototypes_copy = prototypes.clone()
             if self.ema:
                 new_memory = self.memory(self.m_items, prototypes)
                 self.m_items = new_memory
-                # updated_class_prototypes = new_memory
+                updated_class_prototypes = new_memory
 
-                ### fill missing class features with memory features (src filled already)
-                for B_i in range(prototypes.shape[0]):
-                    for cls_i, value in enumerate(prototypes[B_i]):
-                        if value.sum().item() == 0.:
-                            prototypes_copy[B_i][cls_i] = self.m_items[B_i][cls_i].detach()
+                for src_label in label_set_src:
+                    if src_label in label_set_tgt:
+                        continue
+                    else:
+                        # sample from target prototypes to fill source prototypes
+                        for scale_i in range(scale_len):
+                            prototypes_copy[1][scale_i][src_label-1] = self.m_items[1][scale_i][src_label-1].detach()
 
+                # for B_i in range(prototypes.shape[0]):
+                #     for scale_i, value in enumerate(prototypes[B_i]):
+                #         value_mat = value.sum(1)
+                #         indices = torch.nonzero(value_mat).squeeze(-1)
+                #         prototypes_copy[B_i][scale_i][indices] = self.m_items[B_i][scale_i][indices].detach()
+
+                # finally assigned back to prototypes
                 prototypes = prototypes_copy # (B, scale, class, feat_dim)
-
 
             # breakpoint()
             # TODO reshape to (batch,...) after ema
@@ -843,6 +862,7 @@ class DeformableDETR(nn.Module):
 
             # NOTE: store ema memory items
             memory_prototypes = self.m_items.detach().clone()
+            # breakpoint()
             out['prototypes_enc'] = {'src_prototypes_enc': src_prototypes, 'tgt_prototypes_enc': tgt_prototypes, 'tgt_prototypes_bg_enc': tgt_prototypes_bg_enc,
                                     'memory_prototypes': memory_prototypes, 'alpha_values': source_alphas}
             
@@ -862,41 +882,31 @@ class DeformableDETR(nn.Module):
             # TODO testing
             out['thresh'] = thresh
 
-        # return tgt roi embeddings for tsne visualization
         if self.debug:
-            # B = src.shape[0]
-            # w = src.shape[-1]
-            # h = src.shape[-2]
-            # c = src.shape[-3]
-            # flat_length = h*w
+            # if not self.training:
+                # B = src.shape[0]
+                # w = src.shape[-1]
+                # h = src.shape[-2]
+                # c = src.shape[-3]
+                # flat_length = h*w
 
-            # # in case of multi scale features, we need to index accordinly
-            # memory_flat = memory[:,:flat_length,:]
+                # in case of multi scale features, we need to index accordinly
+                # memory_flat = memory[:,:flat_length,:]
 
-            # # then reshape
-            # memory_reshaped = memory_flat.reshape(B,c,h,w)
+                # # then reshape
+                # memory_reshaped = memory_flat.reshape(B,c,h,w)
 
-            # move to cpu for plots
-            # rescaled_boxes = []
-            # list_of_scores = []
-            # list_of_labels = []
-            # for box, score, label in zip(rescaled_boxes_enc, list_of_scores_enc, list_of_labels_enc):
-            #     list_of_scores.append(score.detach().cpu())
-            #     rescaled_boxes.append(box.detach().cpu())
-            #     list_of_labels.append(label)
-
-            list_of_rois = []
+                # move to cpu for plots
+            rescaled_boxes = []
             list_of_scores = []
             list_of_labels = []
-
-            list_of_rois_tgt_third = list_of_rois_tgt[2] # third scale
-            for roi, score, label in zip(list_of_rois_tgt_third, tgt_scores, tgt_labels):
-                list_of_rois.append(roi.detach().cpu())
+            for box, score, label in zip(rescaled_boxes_enc, list_of_scores_enc, list_of_labels_enc):
                 list_of_scores.append(score.detach().cpu())
+                rescaled_boxes.append(box.detach().cpu())
                 list_of_labels.append(label)
 
             # return out, features, memory_reshaped, hs, self.m_items
-            return out, list_of_rois, list_of_scores, list_of_labels
+            return out, rescaled_boxes, list_of_scores, list_of_labels
         else:
             return out
     
