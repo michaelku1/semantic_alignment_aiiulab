@@ -17,6 +17,8 @@
 
 from .deformable_detr_contrastive_tgt_reweight_cross_scale import build
 
+# from .deformable_detr_contrastive_tgt_proposal_reweight_multi_mode import build
+
 # from .deformable_detr_contrastive_tgt_proposal_reweight import build
 
 # from .deformable_detr_contrastive_tgt_proposal_reweight_attention import build

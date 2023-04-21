@@ -22,7 +22,7 @@ from torch.nn.init import xavier_uniform_, constant_, uniform_, normal_
 from util.misc import inverse_sigmoid
 from models.ops.modules import MSDeformAttn
 # TODO: use category_feature_attention to get category specific encoder features before learning the query token
-from models.utils import DomainAttention, GradientReversal, remove_mask_and_warp, category_feature_attention
+from models.utils import DomainAttention, GradientReversal, remove_mask_and_warp
 # TODO: siamese attention
 from models.attention import SingleHeadSiameseAttention
 

@@ -172,9 +172,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             # NOTE outputs only store src predictions here    
             # loss_dict = criterion(outputs, targets, mode='train')
 
-        # loss_dict = criterion(outputs, targets, mode='train')
-        # loss_dict = criterion(outputs, targets, mode='train', scale='multi')
-        loss_dict = criterion(outputs, targets, mode='train', scale='multi_cross')
+        loss_dict = criterion(outputs, targets, mode='train', scale='multi')
+        # loss_dict = criterion(outputs, targets, mode='train', scale='single')
 
         # NOTE: 
         # if num_feat_lvl == 1:

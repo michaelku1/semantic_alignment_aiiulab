@@ -176,11 +176,19 @@ def find_thresh(outputs_class_conf, thresh, keep):
         return keep, thresh
 
 # NOTE checked
-def weighted_aggregate_tmp(batch_d, list_of_labels, list_of_rois, list_of_scores, src_prototypes,
-                            num_classes, hidden_dim):
+def weighted_aggregate(batch_d, list_of_labels, list_of_rois, list_of_scores,
+                            num_classes, src_prototypes, hidden_dim):
     
     """
-    weighted aggregation for rois of each domain: weight --> group rois --> aggregate
+    Implementation for weighted aggregation of centroids, the idea is similar to
+    a clustering algorithm that returns the clustered centroids/prototypes 
+
+    weighted aggregation for rois: weight --> group rois --> aggregate
+
+    prototypes (can be source or target): (num_classes, m_prototypes, feat_dim)
+    list_of_rois: rois pooled from boxes
+    list_of_scores: predicted confidence scores 
+
     """
 
     B = batch_d//2
@@ -226,19 +234,19 @@ def weighted_aggregate_tmp(batch_d, list_of_labels, list_of_rois, list_of_scores
 
     assert source_rois[0].__len__() == source_scores[0].__len__()
 
-    # from outside directly
     prototypes = torch.zeros((num_classes-1, hidden_dim)).cuda()
     epsilon = 1e-6    
-
+    
     ### aggregate prototypes
+    # for each batch
     for i in range(len(source_rois)):
-        roi_sample_tmp = source_rois[i] # some rois for a single class
-        source_scores_tmp = source_scores[i]
-        # for each group
-        for j in range(len(roi_sample_tmp)):
+        roi_gorups = source_rois[i] # some rois for a single class
+        scores = source_scores[i]
+        # for each roi group
+        for j in range(len(roi_gorups)):
             # sum over each class / sum over scores for that class
             # breakpoint()
-            aggregate = torch.sum(roi_sample_tmp[j], dim=0)/(source_scores_tmp[j] + epsilon)
+            aggregate = torch.sum(roi_gorups[j], dim=0)/(scores[j] + epsilon)
             # store prototype at the corresponding cls index position
             prototypes[source_labels[i][j]-1] = aggregate
     
@@ -260,201 +268,114 @@ def weighted_aggregate_tmp(batch_d, list_of_labels, list_of_rois, list_of_scores
 
     return prototypes, alphas
 
-def weighted_aggregate(batch_d, list_of_labels, list_of_rois, list_of_scores, num_classes, hidden_dim):
-    """
-    list_of_rois: [batch] (num_rois, feat_dim)
-    """
-    B = batch_d 
-    source_labels = []
-    target_labels = []
-
-    weighted_rois_source = []
-    weighted_rois_target = []
-
-    for i in range(B):
-        label_set = list(set(list_of_labels[i])) # label set for each sample 
-        # this is only valid as starting index is 0
-        if i//(B//2)==0:
-            source_labels.append(label_set)
-
-            # import pdb; pdb.set_trace()
-            # confidence guided merging
-            weighted_rois = list_of_rois[i]*list_of_scores[i].unsqueeze(-1) # reweighted rois
-            weighted_rois_source.append(weighted_rois)
-        else:
-            target_labels.append(label_set)
-            weighted_rois = list_of_rois[i]*list_of_scores[i].unsqueeze(-1)
-            weighted_rois_target.append(weighted_rois)
-    
-    # import pdb; pdb.set_trace()
-
-    assert len(weighted_rois_source) == len(source_labels) & len(weighted_rois_target) == len(target_labels),\
-    "label and roi lists are not one-to-one"
-    
-    # import pdb; pdb.set_trace()
-    # extract src rois
-    source_rois = [] # list of tensors: stores some rois for each class
-    target_rois = []
-    
-    source_labels_all = list_of_labels[:B//2]
-    target_labels_all = list_of_labels[B//2:]
-
-    # source_labels is a list of label sets, list_of_labels contain lists of all labels
-    assert len(source_labels) == len(source_labels_all) == len(weighted_rois_source), "length should be the same per sample"
-
-    # import pdb; pdb.set_trace()
-    # since labels are sorted, the correponding rois are one-to-one with respect to labels
-    # size: (batch_size,,num_rois,1,feat_dim)
-
-    # import pdb; pdb.set_trace()
-    # batch dim
-    for i in range(len(source_labels)):
-        tmp = []
-        # single label
-        for label in source_labels[i]:
-            matched_src_idx = torch.nonzero(torch.as_tensor(source_labels_all[i])==label).squeeze(1) # e.g matched_idx: torch.Size([11, 1])
-            rois_source = weighted_rois_source[i][matched_src_idx].unsqueeze(1)
-            # import pdb; pdb.set_trace()
-            tmp.append(rois_source)
-        source_rois.append(tmp)
-
-    for i in range(len(target_labels)):
-        tmp = []
-        for label in target_labels[i]:
-            # e.g matched_idx: torch.Size([11, 1])
-            matched_tgt_idx = torch.nonzero(torch.as_tensor(target_labels_all[i])==label).squeeze(1)
-            rois_target = weighted_rois_target[i][matched_tgt_idx].unsqueeze(1) 
-            tmp.append(rois_target)
-        target_rois.append(tmp)
-
-    # aggregate rois for each class
-    src_prototypes = torch.zeros((B//2, num_classes-1, hidden_dim)).cuda()
-    tgt_prototypes = torch.zeros((B//2, num_classes-1, hidden_dim)).cuda()
-
-    epsilon = 1e-6
-    # this is to also index labels (one-to-one)
-    # batch len
-    # import pdb; pdb.set_trace()
-    for i in range(len(source_rois)):
-        roi_sample_tmp = source_rois[i] # some rois for a single class
-        # some rois
-        # class len
-        for j in range(len(roi_sample_tmp)):
-            # src_prototypes.append(torch.sum(source_roi, dim=0)/(torch.sum(list_of_scores[0]) + epsilon))
-            aggregate = torch.sum(roi_sample_tmp[j], dim=0)/(torch.sum(list_of_scores[0]) + epsilon)
-            cls_idx = source_labels[i][j]-1
-            src_prototypes[i][cls_idx] = aggregate # BUG: empty tensors
-            
-    for i in range(len(target_rois)):
-        roi_sample_tmp = target_rois[i]
-        for j in range(len(roi_sample_tmp)):
-            # tgt_prototypes.append(torch.sum(target_rois[i], dim=0)/(torch.sum(list_of_scores[1]) + epsilon))
-            aggregate = torch.sum(roi_sample_tmp[j], dim=0)/(torch.sum(list_of_scores[1]) + epsilon)
-            cls_idx = target_labels[i][j]-1
-            tgt_prototypes[i][cls_idx] = aggregate # BUG: empty tensors
-
-    # class reweighting factor
-    alpha_values_src = torch.ones((num_classes-1))
-    alpha_values_tgt = torch.ones((num_classes-1))
-
-    # import pdb; pdb.set_trace()
-    for cls_i in range(1,num_classes,1):
-        if cls_i in list_of_labels[0]:
-            indices_list = torch.nonzero(torch.as_tensor(list_of_labels[0])==cls_i).tolist()
-            flatten = [index[0] for index in indices_list]
-            p_max = max(list_of_scores[0][flatten])
-            alpha = 1-p_max
-            alpha_values_src[cls_i-1] = alpha
-        else:
-            continue
-
-    for cls_i in range(1,num_classes,1):
-        if cls_i in list_of_labels[1]:
-            indices_list = torch.nonzero(torch.as_tensor(list_of_labels[1])==cls_i).tolist()
-            flatten = [index[0] for index in indices_list]
-            p_max = max(list_of_scores[1][flatten])
-            alpha = 1-p_max
-            alpha_values_tgt[cls_i-1] = alpha
-        else:
-            continue
-        
-    alphas = torch.stack([alpha_values_src, alpha_values_tgt])
-
-    return src_prototypes, tgt_prototypes, alphas
-
 # NOTE we might want to try to pass the prototypes initialised from outside directly instead of updating
 # prototypes from outside
-def weighted_aggregate_tmp_multi_modal(batch_d, list_of_labels, list_of_rois, list_of_scores, num_classes,
+def weighted_aggregate_multi_modal(batch_d, list_of_labels, list_of_rois, list_of_scores, num_classes,
                                         prototypes, momentum_update):
     
     """
-    weighted aggregation for rois of each domain: weight --> group rois --> aggregate
+    Implementation for weighted aggregation of centroids, this is different from weighted_aggregate
+    as this considers updating memory from similarity scores, which is different from the weighted
+    sum using pred/gt scores; therefore, we consider directly updating global prototypes here
+
+    weighted aggregation for rois: weight --> group rois --> aggregate
+
     prototypes (can be source or target): (num_classes, m_prototypes, feat_dim)
+    list_of_rois: rois pooled from boxes
+    list_of_scores: predicted confidence scores 
+
     """
 
-    B = batch_d//2
+    # B = batch_d//2
 
-    source_labels = []
-    weighted_rois_source = []
+    # source_labels = []
+    # weighted_rois_source = []
 
-    ### weight rois with the prediction scores
-    for i in range(B):
-        label_set = list(set(list_of_labels[i])) # label set for each sample 
-        source_labels.append(label_set)
+        ### weight rois with the prediction scores
 
-        # confidence guided merging
-        weighted_rois = list_of_rois[i].squeeze(0)*list_of_scores[i].unsqueeze(-1) # reweighted rois
-        weighted_rois_source.append(weighted_rois)
+    # for i in range(B):
+    #     label_set = list(set(list_of_labels[i])) # label set for each sample 
+    #     source_labels.append(label_set)
 
+    #     # confidence guided merging
+    #     weighted_rois = list_of_rois[i].squeeze(0)*list_of_scores[i].unsqueeze(-1) # reweighted rois
+    #     weighted_rois_source.append(weighted_rois)
 
-    assert len(weighted_rois_source) == len(source_labels)
-    "label and roi lists are not one-to-one"
+    # assert len(weighted_rois_source) == len(source_labels)
+    # "label and roi lists are not one-to-one"
     
-    # extract src rois
-    source_rois = [] # [bs, num_labels] (num_rois, 1, feat_dim)
-    source_labels_all = list_of_labels
+    # source_rois = [] # [bs, num_labels] (num_rois, 1, feat_dim)
+    # source_scores = []
+    # source_labels_all = list_of_labels
 
     # check length
-    assert len(source_labels) == len(source_labels_all) == len(weighted_rois_source), "length should be the same per sample"
+    # assert len(source_labels) == len(source_labels_all) == len(weighted_rois_source), "length should be the same per sample"
 
+    ### group rois with respect to cls labels
+    # for i in range(len(source_labels)):
+    #     tmp = []
+    #     tmp_ = []
+    #     # label in label set
+    #     for label in source_labels[i]:
+    #         matched_src_idx = torch.nonzero(torch.as_tensor(source_labels_all[i])==label).squeeze(1) # matched_idx: (11, 1)
+    #         rois_source = weighted_rois_source[i][matched_src_idx].unsqueeze(1) # (num_rois, 1, feat_dim)
+    #         sum_of_scores = sum(list_of_scores[i][matched_src_idx])
+
+    #         # breakpoint()
+    #         tmp.append(rois_source)
+    #         tmp_.append(sum_of_scores)
+    #     # per batch
+    #     source_rois.append(tmp)
+    #     source_scores.append(tmp_)
+
+    # assert source_rois[0].__len__() == source_scores[0].__len__()
     
-    ### use labels to group class rois
-    for i in range(len(source_labels)):
-        tmp = []
-        for label in source_labels[i]:
-            matched_src_idx = torch.nonzero(torch.as_tensor(source_labels_all[i])==label).squeeze(1) # matched_idx: (11, 1)
-            rois_source = weighted_rois_source[i][matched_src_idx].unsqueeze(1) # (num_rois, 1, feat_dim)
-            # import pdb; pdb.set_trace()
-            tmp.append(rois_source)
+    ### refer to https://arxiv.org/abs/2103.04224
+    _, num_prototypes, hidden_dim = prototypes.shape
 
-        source_rois.append(tmp)
-    
-    # ith batch
-    for i in range(len(source_rois)):
-        roi_sample_tmp = source_rois[i] # some rois for a single class
+    # cache aggregated prototypes 
+    prototypes_local = torch.zeros((num_classes-1, num_prototypes, hidden_dim)).cuda()
 
-        # breakpoint()
-        # jth class
+    rois_reweighted = []
+    # NOTE implementation considers multi-class, multi-moda prototypes
+    for i in range(len(list_of_rois)):
+        roi_reweighted = []
+        # roi_sample_tmp = source_rois[i]
+        roi_sample_tmp = list_of_rois[i]
+        labels_tmp = list_of_labels[i]
+        # for each roi_group
         for j in range(len(roi_sample_tmp)):
-
-            # get class j rois
-            n_rois = roi_sample_tmp[j].squeeze(1) # (rois_num, hidden_dim)
-            m_prototypes = prototypes[j] # (m_prototypes, hidden_dim)
+            # label_idx = source_labels[i][j]-1
+            label_idx = list_of_labels[i][j]-1
             
-            # breakpoint()
+            # get prototypes given the same class idx
+            m_prototypes = prototypes[label_idx]
+            label = labels_tmp[j]
+            roi = roi_sample_tmp[j].unsqueeze(0)
 
-            # compute similarity to find mapping (assignment) to prototypes
-            distances = cosine_distance(n_rois, m_prototypes) # (rois_num, num_prototypes)
+            # roi = roi_sample_tmp[j].squeeze(1)
+
+            # compute simialrity
+            similarity_scores = cosine_distance(roi, m_prototypes)
+            # similarity_scores = torch.matmul(roi, m_prototypes.transpose(1,0))
+            # similarity_scores = F.softmax(similarity_scores, dim=1)
+
+            # recompute rois given scores of prototypes
+            roi_ag = torch.matmul(similarity_scores, m_prototypes) # (num_rois, feat_dim)
+            proto_ag = torch.matmul(similarity_scores.transpose(1,0), roi) # (num_prototypes, feat_dim)
             
-            # apply mapping to roi features
-            aggregate = torch.matmul(distances.transpose(1,0), n_rois) # (num_prototypes, feat_dim)
-            
-            # normalise along feat dim
-            normalized_proto = F.normalize(aggregate, p=2, dim=-1)
+            # normalize
+            roi_ag = F.normalize(roi_ag, p=2, dim=-1).squeeze(0)
+            proto_ag = F.normalize(proto_ag, p=2, dim=-1)
 
-            # apply momentum update
-            updated_prototypes = momentum_update(prototypes, aggregate)
+            prototypes_local[label_idx] = roi_ag
+            roi_reweighted.append(roi_ag)
 
+        roi_reweighted = torch.stack(roi_reweighted)
+        rois_reweighted.append(roi_reweighted)
+    
+
+    # rois_reweighted = torch.stack(rois_reweighted, dim=0)
     ### aggregate rois for each class
     # for i in range(len(source_rois)):
     #     roi_sample_tmp = source_rois[i] # some rois for a single class
@@ -480,7 +401,7 @@ def weighted_aggregate_tmp_multi_modal(batch_d, list_of_labels, list_of_rois, li
 
     alphas = alpha_values_src
 
-    return updated_prototypes, alphas
+    return prototypes_local, rois_reweighted, alphas
 
 
 def compute_CV(features, labels, ave_CxA, class_num):

@@ -8,6 +8,9 @@ import functools
 import random
 
 class Memory(nn.Module):
+    """
+    computes ema only
+    """
     def __init__(self, num_classes, key_dim, keep_rate=0.996, num_feature_levels=1):
         super(Memory, self).__init__()
         batch_size = 2
