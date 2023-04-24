@@ -19,11 +19,13 @@ def get_cfg(exp_dir_path):
         raise FileNotFoundError(f'{str(exp_dir)} does not exist')
 
     cfg_file = list(exp_dir.glob('*.yaml'))[0]
+    print(f'config file: {cfg_file}')
     cfg = get_cfg_defaults()
     cfg.merge_from_file(str(cfg_file))
 
     cfg.PLOT.PLOT_BBOX = False
     cfg.PLOT.PLOT_MAP = False
+    print('config:')
     print(cfg)
 
     return cfg
