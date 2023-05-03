@@ -27,6 +27,10 @@ _C.TRAIN.LR_BACKBONE_NAMES = ["backbone.0"]
 _C.TRAIN.LR_BACKBONE = 2e-5
 _C.TRAIN.LR_LINEAR_PROJ_NAMES = ['reference_points', 'sampling_offsets']
 _C.TRAIN.LR_LINEAR_PROJ_MULT = 0.1
+_C.TRAIN.LR_PROMPT = 0.0
+_C.TRAIN.LR_PROMPT_NAMES = ['prompt']
+_C.TRAIN.LR_HEAD = 2e-5
+_C.TRAIN.LR_HEAD_NAMES = ['class_embed', 'bbox_embed']
 _C.TRAIN.BATCH_SIZE = 2
 _C.TRAIN.WEIGHT_DECAY = 1e-4
 _C.TRAIN.EPOCHS = 50
@@ -88,16 +92,23 @@ _C.MODEL.PROTOTYPE_ALIGN = False
 _C.MODEL.LOCAL_PROTOTYPE_ALIGN = 'sequence'
 _C.MODEL.GLOBAL_PROTOTYPE_ALIGN = False
 _C.MODEL.MEMORY = False
-_C.MODEL.STAGE = 'pretrain'
+_C.MODEL.STAGE = 'train_AQT'
 
 # TODO: triplet loss params
 _C.MODEL.TAU = 0.2
 _C.MODEL.GAMMA = 0.1
 _C.MODEL.MARGIN = 0.01
 _C.MODEL.CENTERS = 10
-_C.MODEL.PROPOSAL_FROM = 'encoder'
-_C.MODEL.PROPOSAL_LEVELS = [0]
 
+_C.MODEL.VISUAL_PROMPT = CN()
+_C.MODEL.VISUAL_PROMPT.SWITCH = 'off'
+_C.MODEL.VISUAL_PROMPT.MODULES = ['encoder']
+_C.MODEL.VISUAL_PROMPT.LOCATION = 'add-1'
+_C.MODEL.VISUAL_PROMPT.PROJECT = False
+_C.MODEL.VISUAL_PROMPT.DEEP = True
+_C.MODEL.VISUAL_PROMPT.DEEP_SHARED = False
+_C.MODEL.VISUAL_PROMPT.NUM_TOKENS = None
+_C.MODEL.VISUAL_PROMPT.DROPOUT_RATE = 0.0
 
 # ------------------------------------------------------------------------
 # Loss
@@ -166,7 +177,6 @@ _C.DATASET.COCO_PATH = '../datasets'
 _C.DATASET.COCO_PANOPTIC_PATH = None
 _C.DATASET.REMOVE_DIFFICULT = False
 _C.DATASET.RESAMPLING = False
-
 
 # ------------------------------------------------------------------------
 # Distributed
