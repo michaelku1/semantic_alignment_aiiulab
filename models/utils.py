@@ -576,6 +576,135 @@ def remove_mask_and_warp(src, pos, padding_mask, level_start_index, spatial_shap
     return src_warped, pos_warped
 
 
+def get_valid_ratio(mask):
+        _, H, W = mask.shape
+        valid_H = torch.sum(~mask[:, :, 0], 1)
+        valid_W = torch.sum(~mask[:, 0, :], 1)
+        valid_ratio_h = valid_H.float() / H
+        valid_ratio_w = valid_W.float() / W
+        valid_ratio = torch.stack([valid_ratio_w, valid_ratio_h], -1)
+
+        return valid_ratio
+
+
+def get_reference_points(spatial_shapes, valid_ratios, device):
+        reference_points_list = []
+        for lvl, (H_, W_) in enumerate(spatial_shapes):
+            ref_y, ref_x = torch.meshgrid(torch.linspace(0.5, H_ - 0.5, H_, dtype=torch.float32, device=device),
+                                          torch.linspace(0.5, W_ - 0.5, W_, dtype=torch.float32, device=device))
+            ref_y = ref_y.reshape(-1)[None] / (valid_ratios[:, None, lvl, 1] * H_)
+            ref_x = ref_x.reshape(-1)[None] / (valid_ratios[:, None, lvl, 0] * W_)
+            ref = torch.stack((ref_x, ref_y), -1)
+            reference_points_list.append(ref)
+        reference_points = torch.cat(reference_points_list, 1)
+        reference_points = reference_points[:, :, None] * valid_ratios[:, None]
+        return reference_points
+
+
+def modify_space_shapes_for_prompts(space_shapes, prompt_embed):
+    # spatial_shapes: (#lvl, 2), the feature shape in each level
+    # prompt_embeddings: (num_prompts, hidden_dim)
+    
+    num_prompts = prompt_embeddings.shape[0]
+    prompt_shape = torch.tensor([[num_prompts, 1]]).float()
+    spatial_shapes = torch.cat([space_shapes, prompt_shape], dim=0)
+
+    return spatial_shapes
+
+
+def modify_level_start_index_for_prompts(level_start_index, prompt_start_index):
+    # level_start_index: tensor([0, H_0W_0=14028, H_0W_0+H_1W_1=17556, H_0W_0+H_1W_1+H_2W_2=18438])
+    # prompt_start_index: tensor()
+    level_start_index = torch.cat([level_start_index, prompt_start_index.unsqueeze(dim=0)])
+
+    return level_start_index
+
+
+def modify_valid_ratios_for_prompts(valid_ratios):
+    # valid_ratios: (bz, #lvl, 2=(w, h))
+    N = valid_ratios.shape[0]
+
+    valid_ratio = torch.ones((N, 1, 2)).float()
+    new_valid_ratios = torch.cat([valid_ratios, valid_ratio], dim=1)
+
+    assert new_valid_ratios.shape[0] == N
+    assert new_valid_ratios.shape[1] == valid_ratios.shape[1] + 1
+    assert new_valid_ratios.shape[2] == 2
+
+    return new_valid_ratios
+
+
+def add_1_prompt_embed_to_src(src, level_start_index, prompt_embed):
+    # src: (N, H_0W_0+...H_3W_3, C)
+    # level_start_index: tensor([0, H_0W_0=14028, H_0W_0+H_1W_1=17556, H_0W_0+H_1W_1+H_2W_2=18438])
+    # prompt_embed: (num_feature_levels, C)
+
+    assert prompt_embed is not None
+    assert prompt_embed.ndim == 2, 'only support add-1'
+    assert len(level_start_index) == len(prompt_embed)
+    assert src.shape[-1] == prompt_embed.shape[-1]
+
+    srcs = []
+    for lvl, start_idx in enumerate(level_start_index):
+        lvl_prompt_embed = prompt_embed[lvl].view(1, 1, -1)  # (1, 1, C)
+
+        if lvl < len(level_start_index) - 1:
+            end_idx = level_start_index[lvl + 1]
+            lvl_src = src[:, start_idx:end_idx, :]  # (N, H_iW_i, C)
+        else:
+            lvl_src = src[:, start_idx:, :]  # (N, H_iW_i, C)
+
+        srcs.append(lvl_src + lvl_prompt_embed)
+    
+    srcs = torch.cat(srcs, dim=1)  # (N, H_0W_0+...H_3W_3, C)
+
+    return srcs
+
+
+def add_1_prompt_embed_to_tgt(tgt, prompt_embed):
+    # tgt: (N, #query, d_model), object queries
+    # prompt_embed: (#query, C)
+    prompt_embed = prompt_embed.unsqueeze(0)  # (1, #query, C)
+    return tgt + prompt_embed
+            
+
+def prepend_prompt_embed_to_src(src, prompt_embed):
+    # src: (N, H_0W_0+...H_3W_3, C)
+    # prompt_embed: (num_prompts, C)
+    N = src.shape[0]
+    prompt_embed = prompt_embed.unsqueeze(0).expand(N, -1, -1)  # (N, num_prompts, C)
+    new_src = torch.cat([src, prompt_embed], dim=1)  # (N, H_0W_0+...H_3W_3+num_prompts, C)
+
+    assert new_src.shape[0] == N
+    assert new_src.shape[1] == src.shape[1] + prompt_embed.shape[0]
+    assert new_src.shape[2] == src.shape[2]
+
+    return new_src
+
+
+def remove_prompt_embed_from_src(src, prompt_embed):
+    # src: (N, H_0W_0+...H_3W_3+num_prompts, C)
+    # prompt_embed: (num_prompts, C)
+    num_prompts = prompt_embed.shape[0]
+    idx = src.shape[1] - num_prompts
+    return src[:, :idx, :]
+
+
+def modify_pos_for_prompts(pos, prompt_embed):
+    # pos: (N, H_0W_0+...H_3W_3, C)
+    # prompt_embed: (num_prompts, C)
+    N, _, C = src.shape
+    num_prompts = prompt_embed.shape[0]
+    prompt_pos = torch.zeros(N, num_prompts, C)
+    new_pos = torch.cat([pos, prompt_pos], dim=1)  # (N, H_0W_0+...H_3W_3+num_prompts, C)
+
+    assert new_pos.shape[0] == N
+    assert new_pos.shape[1] == pos.shape[1] + prompt_embed.shape[0]
+    assert new_pos.shape[2] == pos.shape[2]
+
+    return new_pos
+
+
 class FCDiscriminator(nn.Module):
     def __init__(self, num_classes, ndf = 64):
         super(FCDiscriminator, self).__init__()
