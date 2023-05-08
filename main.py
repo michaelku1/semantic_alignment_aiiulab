@@ -80,7 +80,7 @@ def main(cfg):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
-    model, criterion, postprocessors, postprocessors_target = build_model(cfg)
+    model, criterion, postprocessors = build_model(cfg)
     model.to(device)
 
     model_without_ddp = model
@@ -339,7 +339,7 @@ def main(cfg):
         print('loaded memory')
 
     if cfg.EVAL:
-        test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,postprocessors_target,
+        test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
                                               data_loader_val, base_ds, device, cfg, prefix='eval')
         if cfg.OUTPUT_DIR:
             utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
@@ -376,14 +376,14 @@ def main(cfg):
         if cfg.ACCUMULATE_STATS:
             train_stats, probs = train_one_epoch(
                 model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS, cur_epoch,
-                base_ds, postprocessors, postprocessors_target, image_ids, cfg.TRAIN.CLIP_MAX_NORM, cfg=cfg,
+                base_ds, postprocessors, image_ids, cfg.TRAIN.CLIP_MAX_NORM, cfg=cfg,
                 plot_bbox=cfg.PLOT.PLOT_BBOX, plot_map=cfg.PLOT.PLOT_MAP, prefix=f'train_epoch={epoch}')
         
         else:
             # prototypes storing dict
             train_stats, thresh_stats, outputs = train_one_epoch(
                 model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS, total_iter,
-                base_ds, postprocessors, postprocessors_target, None, cfg.TRAIN.CLIP_MAX_NORM,
+                base_ds, postprocessors, None, cfg.TRAIN.CLIP_MAX_NORM,
                 cfg=cfg, plot_bbox=cfg.PLOT.PLOT_BBOX, plot_map=cfg.PLOT.PLOT_MAP, prefix=f'train_epoch={epoch}')
         
         if 'memory_prototypes' in outputs['prototypes_enc']:
@@ -414,7 +414,7 @@ def main(cfg):
                 }, checkpoint_path)
 
         test_stats, coco_evaluator = evaluate(
-            model, criterion, postprocessors, postprocessors_target, data_loader_val, base_ds, device, cfg, prefix=f'eval_epoch={epoch}'
+            model, criterion, postprocessors, data_loader_val, base_ds, device, cfg, prefix=f'eval_epoch={epoch}'
         )
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
