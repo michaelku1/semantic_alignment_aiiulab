@@ -294,10 +294,13 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, cfg
 
     # accumulate predictions from all images
     if coco_evaluator is not None:
+        print('=== Overall mAP ===')
         coco_evaluator.accumulate()
         coco_evaluator.summarize()
     if coco_evaluators_per_class is not None:
         for evaluator in coco_evaluators_per_class.values():
+            cat_name = base_ds.cats[cat_id]['name']
+            print(f'=== Class mAP ({cat_id}, {cat_name}) ===')
             evaluator.accumulate()
             evaluator.summarize()
 
