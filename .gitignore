@@ -3,4 +3,5 @@ datasets/*
 exps/*
 pretrained_weights
 released_weights
+models/ops
 *.txt
