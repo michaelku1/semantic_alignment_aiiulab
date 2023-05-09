@@ -128,8 +128,10 @@ def main(cfg):
                 break
         return out
 
+    print('')
+    print('All parameters:')
     for n, p in model_without_ddp.named_parameters():
-        print(n)
+        print(f'    {n}')
 
     model_stages = [
         'train_AQT',
@@ -220,6 +222,8 @@ def main(cfg):
         if not cfg.FINETUNE:
             raise ValueError('The config key FINTUNE should be set as `True` when using visual_prompt_tuning')
 
+        print()
+        print('Visual prompt tuning parameters:')
         names = [
             cfg.TRAIN.LR_HEAD_NAMES,
             cfg.TRAIN.LR_PROMPT_NAMES,
@@ -230,6 +234,7 @@ def main(cfg):
         for n, p in model_without_ddp.named_parameters():
             if match_name_keywords(n, names):
                 p.requires_grad_(True)  # train prompt embedding, prompt projection, prompt dropout
+                print(f'    {n}')
             else:
                 p.requires_grad_(False)  # freeze encoder & decoder
 
@@ -322,8 +327,6 @@ def main(cfg):
             checkpoint = torch.load(cfg.RESUME, map_location='cpu')
         missing_keys, unexpected_keys = model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
         unexpected_keys = [k for k in unexpected_keys if not (k.endswith('total_params') or k.endswith('total_ops'))]
-
-        import pdb; pdb.set_trace()
         
         if len(missing_keys) > 0:
             print('Missing Keys: {}'.format(missing_keys))
@@ -331,20 +334,28 @@ def main(cfg):
             print('Unexpected Keys: {}'.format(unexpected_keys))
 
         if checkpoint['epoch']:
-            START_EPOCH = checkpoint['epoch'] + 1
+            START_EPOCH = 0
         else:
             raise ValueError('missing resume model while finetune is on')
 
-    if cfg.EVAL:
-        test_stats, coco_evaluator = evaluate(model, criterion, postprocessor,
+        print()
+        print('Start evaluation before fine tuning')
+        test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
                                               data_loader_val, base_ds, device, cfg, prefix='eval')
-        if cfg.OUTPUT_DIR:
-            utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
-        return
+        
+        log_stats = {**{f'test_{k}': v for k, v in test_stats.items()},
+                     'epoch': 'before fine tuning',
+                     'n_parameters': n_parameters}
+                     
+        if cfg.OUTPUT_DIR and utils.is_main_process():
+            with (output_dir / "log.txt").open("a") as f:
+                f.write(json.dumps(log_stats) + "\n")
 
     # if resume training, local variable START_EPOCH is created
-    if cfg.RESUME:
+    if cfg.RESUME and not cfg.FINETUNE:
         pass
+    elif cfg.RESUME and cfg.FINETUNE:
+        START_EPOCH = 0
     else:
         # else create a local variable
         START_EPOCH = 0
