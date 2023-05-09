@@ -70,10 +70,6 @@ _C.MODEL.NUM_QUERIES = 300 # Number of query slots
 _C.MODEL.DEC_N_POINTS = 4
 _C.MODEL.ENC_N_POINTS = 4
 
-# TODO: memory params
-_C.MODEL.MEMORY_SIZE = 10
-_C.MODEL.MEMORY_DIM = 512
-
 # * Segmentation
 _C.MODEL.MASKS = False # Train segmentation head if the flag is provided
 
@@ -82,24 +78,9 @@ _C.MODEL.BACKBONE_ALIGN = False
 _C.MODEL.SPACE_ALIGN = False
 _C.MODEL.CHANNEL_ALIGN = False
 _C.MODEL.INSTANCE_ALIGN = False
-
-# TODO: category alignemnt
-_C.MODEL.CATEGORY_ALIGN = False
-_C.MODEL.ENCODER_CLASS_ALIGN = False
-
-_C.MODEL.PROTOTYPE_ALIGN = False
-# query or sequence
-_C.MODEL.LOCAL_PROTOTYPE_ALIGN = 'sequence'
-_C.MODEL.GLOBAL_PROTOTYPE_ALIGN = False
-_C.MODEL.MEMORY = False
 _C.MODEL.STAGE = 'train_AQT'
 
-# TODO: triplet loss params
-_C.MODEL.TAU = 0.2
-_C.MODEL.GAMMA = 0.1
-_C.MODEL.MARGIN = 0.01
-_C.MODEL.CENTERS = 10
-
+# * Visual prompt tuning (William)
 _C.MODEL.VISUAL_PROMPT = CN()
 _C.MODEL.VISUAL_PROMPT.SWITCH = 'off'
 _C.MODEL.VISUAL_PROMPT.MODULES = ['encoder']
@@ -131,40 +112,8 @@ _C.LOSS.BACKBONE_LOSS_COEF = 0.1
 _C.LOSS.SPACE_QUERY_LOSS_COEF = 0.1
 _C.LOSS.CHANNEL_QUERY_LOSS_COEF = 0.1
 _C.LOSS.INSTANCE_QUERY_LOSS_COEF = 0.1
-_C.LOSS.CATEGORY_QUERY_LOSS_COEF = 0.1
-_C.LOSS.MARGIN = 1.0
-
-# TODO for current implem.
-_C.LOSS.INTER_CLASS_COEF = 0.1
-_C.LOSS.INTRA_CLASS_COEF = 1.
-_C.LOSS.BG_LOSS_COEF = 0.1
-
-_C.LOSS.CATEGORY_TOKEN_LOSS_COEF = 1.
-
-# multi class
-_C.LOSS.MULTI_CLASS_COEF = 0.01
-
-# global
-_C.LOSS.PROTOTYPE_TOKENS_LOSS_COEF = 0.1
-
-# local
-_C.LOSS.LOCAL_DECODER_EMBED_COEF = 0.1
-# _C.LOSS.ACTIVATION_MAP_ALIGN_LOSS_COEF = 0.1
-_C.LOSS.PROTOTYPE_ALIGN_LOSS_COEF = 0.1
-_C.LOSS.CMT_CLS_JS = 1.
 _C.LOSS.FOCAL_ALPHA = 0.25
 _C.LOSS.DA_GAMMA = 0
-
-_C.LOSS.SOFT_TRIPLET_SRC_COEF = 0.1
-_C.LOSS.SOFT_TRIPLET_TGT_COEF = 0.1
-_C.LOSS.COSISTENCY_COEF = 0.1
-
-_C.LOSS.MULTI_LABEL_LOSS_COEF = 0.1
-_C.LOSS.LAMDA = 0.25
-_C.LOSS.AUG_LOSS_COEF = 1.
-_C.LOSS.EOS_COEF = 0.1
-_C.LOSS.BG_LOSS_COEF = 1.
-_C.LOSS.CATEGORY_TOKEN_LOSS_COEF = 0.1
 
 # ------------------------------------------------------------------------
 # dataset parameters
@@ -176,7 +125,6 @@ _C.DATASET.DATASET_FILE = 'cityscapes_to_foggy_cityscapes'
 _C.DATASET.COCO_PATH = '../datasets'
 _C.DATASET.COCO_PANOPTIC_PATH = None
 _C.DATASET.REMOVE_DIFFICULT = False
-_C.DATASET.RESAMPLING = False
 
 # ------------------------------------------------------------------------
 # Distributed
@@ -203,14 +151,7 @@ _C.NUM_WORKERS = 2
 _C.CACHE_MODE = False # whether to cache images on memory
 
 _C.GRADIENT_CHECKPOINT = False
-_C.DEBUG = False # debug mode
-_C.TFBOARD = False
 _C.FINETUNE = False
-_C.EMA = False
-_C.FEAT_AUG = False
-_C.ACCUMULATE_STATS = False
-_C.CONTRASTIVE = False
-_C.CAM_VIZ = False
 
 # ------------------------------------------------------------------------
 # Plot box
