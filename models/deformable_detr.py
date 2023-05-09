@@ -407,6 +407,7 @@ class SetCriterion(nn.Module):
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
 
         # Retrieve the matching between the outputs of the last layer and the targets
+        targets = targets[:len(outputs_without_aux['pred_logits'])]
         indices = self.matcher(outputs_without_aux, targets)
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes
@@ -437,24 +438,6 @@ class SetCriterion(nn.Module):
                     l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_boxes, **kwargs)
                     l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
-
-        if 'enc_outputs' in outputs:
-            enc_outputs = outputs['enc_outputs']
-            bin_targets = copy.deepcopy(targets)
-            for bt in bin_targets:
-                bt['labels'] = torch.zeros_like(bt['labels'])
-            indices = self.matcher(enc_outputs, bin_targets)
-            for loss in self.losses:
-                if loss == 'masks':
-                    # Intermediate masks losses are too costly to compute, we ignore them.
-                    continue
-                kwargs = {}
-                if loss == 'labels':
-                    # Logging is enabled only for the last layer
-                    kwargs['log'] = False
-                l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
-                l_dict = {k + f'_enc': v for k, v in l_dict.items()}
-                losses.update(l_dict)
 
         if 'da_output' in outputs:
             for k, v in outputs['da_output'].items():

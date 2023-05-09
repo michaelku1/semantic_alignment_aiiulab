@@ -10,12 +10,12 @@
 # ------------------------------------------------------------------------
 
 from .deformable_detr import build
-from .deformable_detr_prompt_add_1_feat import build_vpt
+from .deformable_detr_prompt_add_1_feat import build as build_vpt
 
 def build_model(cfg):
     if cfg.MODEL.VISUAL_PROMPT.SWITCH:
         print('`build_model` comes from `deformable_detr_prompt_add_1_feat.py`')
-        return build_vpt
+        return build_vpt(cfg)
     else:
         print('`build_model` comes from `deformable_detr.py`')
         return build(cfg)
