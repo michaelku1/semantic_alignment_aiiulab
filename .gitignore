@@ -23,3 +23,4 @@ var/
 datasets
 exps
 released_weights
+pretrained_weights
