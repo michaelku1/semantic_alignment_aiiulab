@@ -79,7 +79,7 @@ def get_coco_eval_results(df_log):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('log_path', type=str)
-    parser.add_argument('class_map', action='store_true')
+    parser.add_argument('--class_map', action='store_true')
     parser.add_argument('--pretrained_log_path', type=str, default=None)
     parser.add_argument('--start_epoch', type=int, default=None)
     args = parser.parse_args()
