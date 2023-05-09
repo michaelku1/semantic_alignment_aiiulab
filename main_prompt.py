@@ -57,10 +57,6 @@ def setup(args):
 
 
 def main(cfg):
-    # if you want uda mode, at least one align strategy has to be true
-    # align = cfg.MODEL.BACKBONE_ALIGN or cfg.MODEL.SPACE_ALIGN or cfg.MODEL.CHANNEL_ALIGN or cfg.MODEL.INSTANCE_ALIGN
-    # assert align == (cfg.DATASET.DA_MODE == 'uda')
-
     print("git:\n  {}\n".format(utils.get_sha()))
     print(cfg)
 
@@ -326,6 +322,8 @@ def main(cfg):
             checkpoint = torch.load(cfg.RESUME, map_location='cpu')
         missing_keys, unexpected_keys = model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
         unexpected_keys = [k for k in unexpected_keys if not (k.endswith('total_params') or k.endswith('total_ops'))]
+
+        import pdb; pdb.set_trace()
         
         if len(missing_keys) > 0:
             print('Missing Keys: {}'.format(missing_keys))
@@ -384,12 +382,6 @@ def main(cfg):
                      **{f'test_{k}': v for k, v in test_stats.items()},
                      'epoch': epoch,
                      'n_parameters': n_parameters}
-
-        # TODO store stats in a dictionary
-        if cfg.ACCUMULATE_STATS:
-            stats = {'probs': probs}
-            with (output_dir/"stats.txt").open("a") as f:
-                f.write(json.dumps(stats) + "\n")
 
         # log per epoch stats
         if cfg.OUTPUT_DIR and utils.is_main_process():

@@ -56,12 +56,6 @@ def setup(args):
 
 
 def main(cfg):
-    # if you want uda mode, at least one align strategy has to be true
-    # TODO turn this off for plain deformable detr training
-
-    # align = cfg.MODEL.BACKBONE_ALIGN or cfg.MODEL.SPACE_ALIGN or cfg.MODEL.CHANNEL_ALIGN or cfg.MODEL.INSTANCE_ALIGN
-    # assert align == (cfg.DATASET.DA_MODE == 'uda')
-
     print("git:\n  {}\n".format(utils.get_sha()))
     print(cfg)
 
@@ -278,13 +272,6 @@ def main(cfg):
             lr_scheduler.step(lr_scheduler.last_epoch)
             START_EPOCH = checkpoint['epoch'] + 1
 
-        # TODO: safely commented out for now
-        # check the resumed model
-        # if not cfg.EVAL:
-        #     test_stats, coco_evaluator = evaluate(
-        #         model, criterion, postprocessors, postprocessors_target, data_loader_val, base_ds, device, cfg.OUTPUT_DIR, cfg, plot_bbox=False
-        #     )
-
     # TODO: for retraining
     elif cfg.FINETUNE and cfg.RESUME:
         if cfg.RESUME.startswith('https'):
@@ -295,35 +282,6 @@ def main(cfg):
         missing_keys, unexpected_keys = model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
         unexpected_keys = [k for k in unexpected_keys if not (k.endswith('total_params') or k.endswith('total_ops'))]
         
-        # if not cfg.EVAL and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
-        #     import copy
-        #     # p_groups = copy.deepcopy(optimizer.param_groups)
-
-        #     # import pdb; pdb.set_trace()
-            
-        #     # pg_old here stands for the initialised optimizer above
-        #     # len(checkpoint['optimizer']['param_groups']) == 3
-        #     optimizer.load_state_dict(checkpoint['optimizer'])
-
-        #     # optimizer.param_groups vs checkpoint['optimizer']
-        #     # # after loading state_dict, the chockpointed value is loaded
-        #     # for pg, pg_old in zip(optimizer.param_groups, p_groups):
-        #     #     pg['lr'] = pg_old['lr']
-        #     #     pg['initial_lr'] = pg_old['initial_lr']
-
-        #     print(optimizer.param_groups)
-        #     lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
-        #     # todo: this is a hack for doing experiment that resume from checkpoint and also modify lr scheduler (e.g., decrease lr in advance).
-        #     override_resumed_lr_drop = True
-        #     # import pdb; pdb.set_trace()
-        #     if override_resumed_lr_drop:
-        #         print('Warning: (hack) override_resumed_lr_drop is set to True, so cfg.TRAIN.LR_DROP would override lr_drop in resumed lr_scheduler.')
-        #         lr_scheduler.step_size = cfg.TRAIN.LR_DROP
-        #         lr_scheduler.base_lrs = list(map(lambda group: group['initial_lr'], optimizer.param_groups))
-        #     lr_scheduler.step(lr_scheduler.last_epoch)
-        #     START_EPOCH = checkpoint['epoch'] + 1
-
-        
         if len(missing_keys) > 0:
             print('Missing Keys: {}'.format(missing_keys))
         if len(unexpected_keys) > 0:
@@ -333,10 +291,6 @@ def main(cfg):
             START_EPOCH = checkpoint['epoch'] + 1
         else:
             raise ValueError('missing resume model while finetune is on')
-
-    if cfg.RESUME_MEMORY:
-        model_without_ddp.m_items = torch.load(cfg.RESUME_MEMORY, map_location='cpu')
-        print('loaded memory')
 
     if cfg.EVAL:
         test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
@@ -354,50 +308,15 @@ def main(cfg):
 
     print("Start training")
     start_time = time.time()
-
-    # TODO fix image indixes for visualization
-    total_iter = 0 # TODO count total iterations, starting point
-    # image_ids = torch.randint(500, 3474, (3,)).tolist() # select image to visualize pseudo labels
-    # # image_ids.sort()
-    
-    # lines = ['{}'.format(id) for id in image_ids]
-
-    # with open('current_plot_image_index.txt', 'w') as f:
-    #     for line in lines:
-    #         f.write(line)
-    #         f.write('\n')
-
     for epoch in range(START_EPOCH, cfg.TRAIN.EPOCHS):
         if cfg.DIST.DISTRIBUTED:
             sampler_train.set_epoch(epoch)
+            
+        train_stats, thresh_stats, outputs = train_one_epoch(
+            model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS, total_iter,
+            base_ds, postprocessors, None, cfg.TRAIN.CLIP_MAX_NORM,
+            cfg=cfg, plot_bbox=cfg.PLOT.PLOT_BBOX, plot_map=cfg.PLOT.PLOT_MAP, prefix=f'train_epoch={epoch}')
         
-        cur_epoch = epoch
-        # TODO: probe probs, boxes
-        if cfg.ACCUMULATE_STATS:
-            train_stats, probs = train_one_epoch(
-                model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS, cur_epoch,
-                base_ds, postprocessors, image_ids, cfg.TRAIN.CLIP_MAX_NORM, cfg=cfg,
-                plot_bbox=cfg.PLOT.PLOT_BBOX, plot_map=cfg.PLOT.PLOT_MAP, prefix=f'train_epoch={epoch}')
-        
-        else:
-            # prototypes storing dict
-            train_stats, thresh_stats, outputs = train_one_epoch(
-                model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS, total_iter,
-                base_ds, postprocessors, None, cfg.TRAIN.CLIP_MAX_NORM,
-                cfg=cfg, plot_bbox=cfg.PLOT.PLOT_BBOX, plot_map=cfg.PLOT.PLOT_MAP, prefix=f'train_epoch={epoch}')
-        
-        if 'memory_prototypes' in outputs['prototypes_enc']:
-            (output_dir / 'memory_prototypes').mkdir(exist_ok=True)
-            torch.save(outputs['prototypes_enc']['memory_prototypes'], output_dir /'memory_prototypes'/ f'ema_prototypes_epoch_{epoch:04}.pt')
-
-        if type(thresh_stats)==list():
-            if (epoch+1) % 1 == 0:
-                torch.save(thresh_stats, output_dir / f'stats_epoch_{epoch:04}.pt')
-
-        # total_iter = cur_iter # TODO import pdb; pdb.set_trace() total_iter after each training epoch
-        
-        # train_stats = train_one_epoch(
-        #     model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.CLIP_MAX_NORM)
         lr_scheduler.step()
         if cfg.OUTPUT_DIR:
             checkpoint_paths = [output_dir / 'checkpoint.pth']
@@ -421,12 +340,6 @@ def main(cfg):
                      **{f'test_{k}': v for k, v in test_stats.items()},
                      'epoch': epoch,
                      'n_parameters': n_parameters}
-
-        # TODO store stats in a dictionary
-        if cfg.ACCUMULATE_STATS:
-            stats = {'probs': probs}
-            with (output_dir/"stats.txt").open("a") as f:
-                f.write(json.dumps(stats) + "\n")
 
         # log per epoch stats
         if cfg.OUTPUT_DIR and utils.is_main_process():
