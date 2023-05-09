@@ -183,7 +183,7 @@ def plot_bbox(
             title = f'{label_name}({score.item():.3f})'
             label_count[label.item()] += 1
 
-            x1, y1, x2, y2 = np.round(box.cpu().numpy()).astype(np.int)
+            x1, y1, x2, y2 = np.round(box.cpu().numpy()).astype(np.int64)
 
             labelSize = cv2.getTextSize(title, fontFace, fontScale, thickness)
             color = colors[label.item()]
