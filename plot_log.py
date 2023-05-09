@@ -5,14 +5,14 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 
-def plot_map(log_path, pretrained_log_path=None, start_epoch=0):
+def plot_map(log_path, class_map=False, pretrained_log_path=None, start_epoch=0):
     exp_name = log_path.split('/')[-2]
     log_path = Path(log_path)
     log_dir = log_path.parents[0]
     save_path = log_dir / 'mAP.png'
 
     df_log = pd.read_json(str(log_path), lines=True)
-    coco_eval, max_mAP, class_coco_evals, class_max_mAPs = get_coco_eval_results(df_log)
+    coco_eval, max_mAP, max_epoch, class_coco_evals, class_max_mAPs = get_coco_eval_results(df_log)
 
     plt.figure(figsize=(15, 8))
     if pretrained_log_path:
@@ -27,16 +27,17 @@ def plot_map(log_path, pretrained_log_path=None, start_epoch=0):
             plt.axvline(x=start_epoch, ls='--', c='r')
 
         df_log = pd.concat([df_pretrained_log, df_log], ignore_index=True)
-        coco_eval, max_mAP, class_coco_evals, class_max_mAPs = get_coco_eval_results(df_log)
+        coco_eval, max_mAP, max_epoch, class_coco_evals, class_max_mAPs = get_coco_eval_results(df_log)
     
-    title = f'Max mAP = {max_mAP:.4f}'
+    title = f'Max mAP = {max_mAP:.4f} ({max_epoch}-th epoch)'
     if pretrained_log_path:
          title += f' (baseline = {pretrained_max_mAP:.4f})'
 
     plt.plot(coco_eval, label=exp_name)
-    for (cat_id, cat_name), coco_eval in class_coco_evals.items():
-        class_max_mAP = class_max_mAPs[(cat_id, cat_name)]
-        plt.plot(coco_eval, label=f'({cat_id}) {cat_name} ({class_max_mAP:.4f})', alpha=0.3)
+    if class_map:
+        for (cat_id, cat_name), coco_eval in class_coco_evals.items():
+            class_max_mAP = class_max_mAPs[(cat_id, cat_name)]
+            plt.plot(coco_eval, label=f'({cat_id}) {cat_name} ({class_max_mAP:.4f})', alpha=0.3)
     plt.title(title)
     plt.xlabel('epoch')
     plt.ylabel('mAP')
@@ -72,18 +73,20 @@ def get_coco_eval_results(df_log):
         class_coco_evals[(cat_id, cat_name)] = class_coco_eval
         class_max_mAPs[(cat_id, cat_name)] = class_max_mAP
 
-    return coco_eval, max_mAP, class_coco_evals, class_max_mAPs
+    return coco_eval, max_mAP, max_epoch, class_coco_evals, class_max_mAPs
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('log_path', type=str)
+    parser.add_argument('class_map', action='store_true')
     parser.add_argument('--pretrained_log_path', type=str, default=None)
     parser.add_argument('--start_epoch', type=int, default=None)
     args = parser.parse_args()
 
     plot_map(
         log_path=args.log_path,
+        class_map=args.class_map,
         pretrained_log_path=args.pretrained_log_path,
         start_epoch=args.start_epoch
     )
