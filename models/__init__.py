@@ -9,9 +9,14 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 # ------------------------------------------------------------------------
 
-# from .deformable_detr import build
-from .deformable_detr_prompt_add_1_feat import build
+from .deformable_detr import build
+from .deformable_detr_prompt_add_1_feat import build_vpt
 
 def build_model(cfg):
-    return build(cfg)
+    if cfg.MODEL.VISUAL_PROMPT.SWITCH:
+        print('`build_model` comes from `deformable_detr_prompt_add_1_feat.py`')
+        return build_vpt
+    else:
+        print('`build_model` comes from `deformable_detr.py`')
+        return build(cfg)
 
