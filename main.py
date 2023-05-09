@@ -444,13 +444,13 @@ def main(cfg):
         if cfg.ACCUMULATE_STATS:
             train_stats, probs = train_one_epoch(
                 model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS,
-                base_ds, postprocessors, postprocessors_target, image_ids, store_path, cfg.NUM_FEATURE_LEVELS, cfg.TRAIN.CLIP_MAX_NORM)
+                base_ds, postprocessors, postprocessors_target, image_ids, store_path, cfg.MODEL.NUM_FEATURE_LEVELS, cfg.TRAIN.CLIP_MAX_NORM)
         
         else:
             # prototypes storing dict
             train_stats, thresh_stats, outputs = train_one_epoch(
                 model, criterion, data_loader_train, optimizer, device, epoch, cfg.TRAIN.EPOCHS, total_iter,
-                base_ds, postprocessors, postprocessors_target, image_ids, store_path, cfg.NUM_FEATURE_LEVELS, cfg.TRAIN.CLIP_MAX_NORM)
+                base_ds, postprocessors, postprocessors_target, image_ids, store_path, cfg.MODEL.NUM_FEATURE_LEVELS, cfg.TRAIN.CLIP_MAX_NORM)
             
         if 'thresh_change_occurence' in outputs:
             (output_dir / 'thresh_change_occurence').mkdir(exist_ok=True)

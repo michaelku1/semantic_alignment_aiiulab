@@ -19,3 +19,7 @@ var/
 *.egg-info/
 .installed.cfg
 *.egg
+
+datasets
+exps
+released_weights
