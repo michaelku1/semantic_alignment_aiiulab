@@ -522,24 +522,6 @@ class SetCriterion(nn.Module):
                     l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
 
-        if 'enc_outputs' in outputs:
-            enc_outputs = outputs['enc_outputs']
-            bin_targets = copy.deepcopy(targets)
-            for bt in bin_targets:
-                bt['labels'] = torch.zeros_like(bt['labels'])
-            indices = self.matcher(enc_outputs, bin_targets)
-            for loss in self.losses:
-                if loss == 'masks':
-                    # Intermediate masks losses are too costly to compute, we ignore them.
-                    continue
-                kwargs = {}
-                if loss == 'labels':
-                    # Logging is enabled only for the last layer
-                    kwargs['log'] = False
-                l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
-                l_dict = {k + f'_enc': v for k, v in l_dict.items()}
-                losses.update(l_dict)
-
         if 'da_output' in outputs:
             for k, v in outputs['da_output'].items():
                 losses[f'loss_{k}'] = self.loss_da(v, use_focal='query' in k)
@@ -598,7 +580,7 @@ class MLP(nn.Module):
 
 
 def build(cfg):
-    if cfg.MODEL.VISUAL_PROMPT.SWITCH != 'on':
+    if not cfg.MODEL.VISUAL_PROMPT.SWITCH:
         raise ImportError('Wrong import! This module is only for visual prompt')
     if cfg.MODEL.VISUAL_PROMPT.LOCATION != 'add-1-feat':
         raise ImportError('Wrong import! This module is only for that visual prompts are added-1-feat')
