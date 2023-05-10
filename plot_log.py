@@ -12,13 +12,15 @@ def plot_map(log_path, class_map=False, pretrained_log_path=None, start_epoch=0)
     save_path = log_dir / 'mAP.png'
 
     df_log = pd.read_json(str(log_path), lines=True)
+    df_log = get_rid_of_str_epoch(df_log)
     coco_eval, max_mAP, max_epoch, class_coco_evals, class_max_mAPs = get_coco_eval_results(df_log)
 
     plt.figure(figsize=(15, 8))
     if pretrained_log_path:
         pretrained_log_path = Path(pretrained_log_path)
         df_pretrained_log = pd.read_json(str(pretrained_log_path), lines=True)
-        pretrained_coco_eval, pretrained_max_mAP, _, _ = get_coco_eval_results(df_pretrained_log)
+        df_pretrained_log = get_rid_of_str_epoch(df_pretrained_log)
+        pretrained_coco_eval, pretrained_max_mAP, _, _, _ = get_coco_eval_results(df_pretrained_log)
 
         plt.plot(pretrained_coco_eval, label='pretrained')
 
@@ -44,6 +46,12 @@ def plot_map(log_path, class_map=False, pretrained_log_path=None, start_epoch=0)
     plt.legend(loc='lower right')
     plt.savefig(str(save_path))
     print(f'Saved to {str(save_path)}!')
+
+
+def get_rid_of_str_epoch(df_log):
+    # the column `epoch` may contain a string `before fine tuning`
+    mask = ~df_log['epoch'].apply(lambda e: isinstance(e, str))
+    return df_log[mask]
 
 
 def get_coco_eval_results(df_log):
