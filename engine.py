@@ -236,9 +236,15 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, cfg
             tgt_tensors = samples.tensors
             img_tensors = {target['image_id'].item(): output for target, output in zip(targets, tgt_tensors)}
 
+            # images are all resized to 800, so we can't use `orig_size` to rescale bboxes
+            # use `size` instead
+            target_sizes = torch.stack([t["size"] for t in targets], dim=0)
+            _results = postprocessors['bbox'](outputs, target_sizes)
+            _res = {target['image_id'].item(): output for target, output in zip(targets, _results)}
+
             plot_bbox(
                 img_tensors=img_tensors,
-                res=res,
+                res=_res,
                 coco=data_loader.dataset.coco,
                 box_save_dir=Path(cfg.OUTPUT_DIR) / 'plot_bbox',
                 score_threshold=cfg.PLOT.SCORE_THRESHOLD,
