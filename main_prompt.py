@@ -220,7 +220,7 @@ def main(cfg):
 
     elif cfg.MODEL.STAGE == 'visual_prompt_tuning':
         if not cfg.FINETUNE:
-            raise ValueError('The config key FINTUNE should be set as `True` when using visual_prompt_tuning')
+            raise ValueError('The config key `FINTUNE` should be set as `True` in visual prompt tuning')
 
         print()
         print('Visual prompt tuning parameters:')
@@ -282,6 +282,7 @@ def main(cfg):
 
     output_dir = Path(cfg.OUTPUT_DIR)
 
+    # load checkpoint and continue training
     if cfg.RESUME and not cfg.FINETUNE: # [BUG] write after freezing cfgs
         if cfg.RESUME.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
@@ -295,19 +296,16 @@ def main(cfg):
         if len(unexpected_keys) > 0:
             print('Unexpected Keys: {}'.format(unexpected_keys))
 
+        # also load the states of optimizer and lr scheduler
+        # while lr, initial_lr, step_size, base_lrs are new
         if not cfg.EVAL and 'optimizer' in checkpoint and 'lr_scheduler' in checkpoint and 'epoch' in checkpoint:
             import copy
-
-            # copy initialised param group
             p_groups = copy.deepcopy(optimizer.param_groups)
-
             optimizer.load_state_dict(checkpoint['optimizer'])
-
             # # pg_old here stands for the initialised optimizer above
             for pg, pg_old in zip(optimizer.param_groups, p_groups):
-                pg['lr'] = pg_old['lr'] # replace checkpoint lr with new lr
+                pg['lr'] = pg_old['lr']  # replace checkpoint lr with new lr
                 pg['initial_lr'] = pg_old['initial_lr']
-
             lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
             # todo: this is a hack for doing experiment that resume from checkpoint and also modify lr scheduler (e.g., decrease lr in advance).
             override_resumed_lr_drop = True
@@ -318,7 +316,13 @@ def main(cfg):
             lr_scheduler.step(lr_scheduler.last_epoch)
             START_EPOCH = checkpoint['epoch'] + 1
 
-    # TODO: for retraining
+        # check the resumed model
+        if not cfg.EVAL:
+            test_stats, coco_evaluator = evaluate(
+                model, criterion, postprocessors, data_loader_val, base_ds, device, cfg.OUTPUT_DIR
+            )
+
+    # load checkpoint and start a new training
     elif cfg.RESUME and cfg.FINETUNE:
         if cfg.RESUME.startswith('https'):
             checkpoint = torch.hub.load_state_dict_from_url(
@@ -341,7 +345,7 @@ def main(cfg):
         print()
         print('Start evaluation before fine tuning')
         test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                              data_loader_val, base_ds, device, cfg, prefix='eval')
+                                              data_loader_val, base_ds, device, cfg, prefix='initialized_eval')
         
         log_stats = {**{f'test_{k}': v for k, v in test_stats.items()},
                      'epoch': 'before fine tuning',
@@ -351,15 +355,17 @@ def main(cfg):
             with (output_dir / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
 
-    # if resume training, local variable START_EPOCH is created
-    if cfg.RESUME and not cfg.FINETUNE:
-        pass
-    elif cfg.RESUME and cfg.FINETUNE:
-        START_EPOCH = 0
+    # start a new training with random initialized weights
     else:
-        # else create a local variable
         START_EPOCH = 0
 
+    if cfg.EVAL:
+        test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
+                                              data_loader_val, base_ds, device, cfg, prefix='eval')
+        if cfg.OUTPUT_DIR:
+            utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
+        return
+        
     print("Start training")
     start_time = time.time()
     for epoch in range(START_EPOCH, cfg.TRAIN.EPOCHS):
