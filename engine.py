@@ -100,11 +100,11 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
         optimizer.zero_grad()
         losses.backward()
-        # if cfg.TRAIN.CLIP_MAX_NORM > 0:
-        #     # compute gradient norm
-        #     grad_total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.TRAIN.CLIP_MAX_NORM)
-        # else:
-        #     grad_total_norm = utils.get_total_grad_norm(model.parameters(), cfg.TRAIN.CLIP_MAX_NORM)
+        if cfg.TRAIN.CLIP_MAX_NORM > 0:
+            # compute gradient norm
+            grad_total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.TRAIN.CLIP_MAX_NORM)
+        else:
+            grad_total_norm = utils.get_total_grad_norm(model.parameters(), cfg.TRAIN.CLIP_MAX_NORM)
         optimizer.step()
         
         metric_logger.update(loss=loss_value, **loss_dict_reduced_scaled, **loss_dict_reduced_unscaled)
