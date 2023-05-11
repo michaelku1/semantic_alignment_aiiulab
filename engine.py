@@ -36,10 +36,15 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     model.train()
     criterion.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
-    metric_logger.add_meter('lr_head', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
-    metric_logger.add_meter('lr_prompt', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     metric_logger.add_meter('class_error', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
-    metric_logger.add_meter('prompt_grad_norm', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
+    metric_logger.add_meter('grad_norm', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
+    if hasattr(cfg.MODEL, 'VISUAL_PROMPT') and cfg.MODEL.VISUAL_PROMPT.SWITCH:
+        metric_logger.add_meter('lr_head', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
+        metric_logger.add_meter('lr_prompt', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
+        metric_logger.add_meter('max_prompt_norm', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
+        metric_logger.add_meter('prompt_grad_norm', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
+    else:
+        metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 1
     
@@ -95,22 +100,30 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
         optimizer.zero_grad()
         losses.backward()
-
         # if cfg.TRAIN.CLIP_MAX_NORM > 0:
         #     # compute gradient norm
         #     grad_total_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.TRAIN.CLIP_MAX_NORM)
         # else:
         #     grad_total_norm = utils.get_total_grad_norm(model.parameters(), cfg.TRAIN.CLIP_MAX_NORM)
-
-        prompt_grad_norm = utils.get_total_grad_norm(optimizer.param_groups[-1]['params'])
         optimizer.step()
         
         metric_logger.update(loss=loss_value, **loss_dict_reduced_scaled, **loss_dict_reduced_unscaled)
         metric_logger.update(class_error=loss_dict_reduced['class_error'])
-        metric_logger.update(lr_head=optimizer.param_groups[0]['lr'])
-        metric_logger.update(lr_prompt=optimizer.param_groups[1]['lr'])
-        metric_logger.update(prompt_grad_norm=prompt_grad_norm)
-        # metric_logger.update(grad_norm=grad_total_norm)
+        metric_logger.update(grad_norm=grad_total_norm)
+
+        # in visual prompt tuning
+        if hasattr(cfg.MODEL, 'VISUAL_PROMPT') and cfg.MODEL.VISUAL_PROMPT.SWITCH:
+            prompt_parameters = [p for n, p in model.named_parameters() if 'prompt_embeddings' in n]
+            prompt_norms = [torch.norm(p, dim=-1) for p in prompt_parameters]
+            max_prompt_norm = max([torch.max(n).item() for n in prompt_norms])
+            prompt_grad_norm = utils.get_total_grad_norm(optimizer.param_groups[-1]['params'])
+
+            metric_logger.update(lr_head=optimizer.param_groups[0]['lr'])
+            metric_logger.update(lr_prompt=optimizer.param_groups[1]['lr'])
+            metric_logger.update(max_prompt_norm=max_prompt_norm)
+            metric_logger.update(prompt_grad_norm=prompt_grad_norm)
+        else:
+            metric_logger.update(lr=optimizer.param_groups[0]['lr'])
 
         # ↓↓↓ plot pseudo boxes ↓↓↓
         if cfg.PLOT.PLOT_BBOX and 'tgt_pred_logits' in outputs:
