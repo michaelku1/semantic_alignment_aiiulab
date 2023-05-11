@@ -151,13 +151,18 @@ class DeformableDETR(nn.Module):
         # initialize visual prompt
         if not self.deep_prompt:
             # if prompt is shallow
-            # it only needs 1 prompt to input in the 1st layer of the encoder
-            assert len(self.prompt_modules) == 1 and self.prompt_modules[0] == 'encoder'
+            # it only needs 1 prompt to input in the 1st layer of the encoder or decoder
+            if 'encoder' in self.prompt_modules:
+                self.encoder_prompt_embeddings = nn.Parameter(torch.zeros(num_feature_levels, hidden_dim))
+                nn.init.uniform_(self.encoder_prompt_embeddings.data, -0.1, 0.1)
+            else:
+                self.encoder_prompt_embeddings = None
 
-            self.encoder_prompt_embeddings = nn.Parameter(torch.zeros(num_feature_levels, hidden_dim))
-            nn.init.uniform_(self.encoder_prompt_embeddings.data, -0.1, 0.1)
-            
-            self.decoder_prompt_embeddings = None
+            if 'decoder' in self.prompt_modules:
+                self.decoder_prompt_embeddings = nn.Parameter(torch.zeros(num_queries, hidden_dim))
+                nn.init.uniform_(self.decoder_prompt_embeddings.data, -0.1, 0.1)
+            else:
+                self.decoder_prompt_embeddings = None
 
         elif self.deep_prompt and self.deep_shared_prompt:
             # if prompt is deep shared,
