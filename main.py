@@ -273,7 +273,7 @@ def main(cfg):
         # check the resumed model
         if not cfg.EVAL:
             test_stats, coco_evaluator = evaluate(
-                model, criterion, postprocessors, data_loader_val, base_ds, device, cfg
+                model, criterion, postprocessors, data_loader_val, base_ds, device, cfg, prefix='init_eval'
             )
 
     # load checkpoint and start a new training
