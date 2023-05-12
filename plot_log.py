@@ -5,7 +5,7 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 
 
-def plot_map(log_path, plot_lr, plot_class_map=False, pretrained_log_path=None, start_epoch=0):
+def plot_map(log_path, plot_lr, plot_class_map=False, plot_max_prompt_norm=False, pretrained_log_path=None, start_epoch=0):
     exp_name = log_path.split('/')[-2]
     log_path = Path(log_path)
     log_dir = log_path.parents[0]
@@ -45,7 +45,13 @@ def plot_map(log_path, plot_lr, plot_class_map=False, pretrained_log_path=None, 
         for col in df_log.columns:
             if 'train_lr' in col:
                 ax2.plot(df_log[col], '--', label=col)
-        ax2.set_ylabel('lr')
+        ax2.set_ylabel(col)
+    if plot_max_prompt_norm:
+        ax2 = ax.twinx()
+        for col in df_log.columns:
+            if 'max_prompt_norm' in col:
+                ax2.plot(df_log[col], '.', label=col)
+                ax2.set_ylabel(col)
     ax.set_title(title)
     ax.set_xlabel('epoch')
     ax.set_ylabel('mAP')
@@ -95,6 +101,7 @@ if __name__ == '__main__':
     parser.add_argument('log_path', type=str)
     parser.add_argument('--plot_lr', action='store_true')
     parser.add_argument('--plot_class_map', action='store_true')
+    parser.add_argument('--plot_max_prompt_norm', action='store_true')
     parser.add_argument('--pretrained_log_path', type=str, default=None)
     parser.add_argument('--start_epoch', type=int, default=None)
     args = parser.parse_args()
@@ -103,6 +110,7 @@ if __name__ == '__main__':
         log_path=args.log_path,
         plot_lr=args.plot_lr,
         plot_class_map=args.plot_class_map,
+        plot_max_prompt_norm=args.plot_max_prompt_norm,
         pretrained_log_path=args.pretrained_log_path,
         start_epoch=args.start_epoch
     )
