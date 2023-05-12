@@ -40,7 +40,7 @@ class DeformableDETR(nn.Module):
     def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels,
                  aux_loss=True, with_box_refine=False, two_stage=False,
                  backbone_align=False, space_align=False, channel_align=False, instance_align=False,
-                 prompt_modules=[], prompt_project=False, deep_prompt=False, deep_shared_prompt=False, num_prompt_tokens=None, prompt_dropout_rate=0.0):
+                 prompt_modules=[], prompt_project=False, deep_prompt=False, deep_shared_prompt=False, num_prompt_tokens=None, prompt_dropout_rate=0.0, prompt_init_a=-0.1, prompt_init_b=0.1):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -98,6 +98,8 @@ class DeformableDETR(nn.Module):
         self.deep_shared_prompt = deep_shared_prompt
         self.num_prompt_tokens = num_prompt_tokens
         self.prompt_dropout_rate = prompt_dropout_rate
+        self.prompt_init_a = prompt_init_a
+        self.prompt_init_b = prompt_init_b
 
         prior_prob = 0.01
         bias_value = -math.log((1 - prior_prob) / prior_prob)
@@ -154,13 +156,13 @@ class DeformableDETR(nn.Module):
             # it only needs 1 prompt to input in the 1st layer of the encoder or decoder
             if 'encoder' in self.prompt_modules:
                 self.encoder_prompt_embeddings = nn.Parameter(torch.zeros(num_feature_levels, hidden_dim))
-                nn.init.uniform_(self.encoder_prompt_embeddings.data, cfg.MODEL.VISUAL_PROMPT.INIT_A, cfg.MODEL.VISUAL_PROMPT.INIT_B)
+                nn.init.uniform_(self.encoder_prompt_embeddings.data, self.prompt_init_a, self.prompt_init_b)
             else:
                 self.encoder_prompt_embeddings = None
 
             if 'decoder' in self.prompt_modules:
                 self.decoder_prompt_embeddings = nn.Parameter(torch.zeros(num_queries, hidden_dim))
-                nn.init.uniform_(self.decoder_prompt_embeddings.data, cfg.MODEL.VISUAL_PROMPT.INIT_A, cfg.MODEL.VISUAL_PROMPT.INIT_B)
+                nn.init.uniform_(self.decoder_prompt_embeddings.data, self.prompt_init_a, self.prompt_init_b)
             else:
                 self.decoder_prompt_embeddings = None
 
@@ -170,11 +172,11 @@ class DeformableDETR(nn.Module):
             assert 'encoder' in self.prompt_modules
 
             self.encoder_prompt_embeddings = nn.Parameter(torch.zeros(num_feature_levels, hidden_dim))
-            nn.init.uniform_(self.encoder_prompt_embeddings.data, cfg.MODEL.VISUAL_PROMPT.INIT_A, cfg.MODEL.VISUAL_PROMPT.INIT_B)
+            nn.init.uniform_(self.encoder_prompt_embeddings.data, self.prompt_init_a, self.prompt_init_b)
 
             if 'decoder' in self.prompt_modules:
                 self.decoder_prompt_embeddings = nn.Parameter(torch.zeros(num_queries, hidden_dim))
-                nn.init.uniform_(self.decoder_prompt_embeddings.data, cfg.MODEL.VISUAL_PROMPT.INIT_A, cfg.MODEL.VISUAL_PROMPT.INIT_B)
+                nn.init.uniform_(self.decoder_prompt_embeddings.data, self.prompt_init_a, self.prompt_init_b)
             else:
                 self.decoder_prompt_embeddings = None
 
@@ -184,14 +186,14 @@ class DeformableDETR(nn.Module):
             if 'encoder' in self.prompt_modules:
                 num_layers = self.transformer.encoder.num_layers
                 self.encoder_prompt_embeddings = nn.Parameter(torch.zeros(num_layers, num_feature_levels, hidden_dim))
-                nn.init.uniform_(self.encoder_prompt_embeddings.data, cfg.MODEL.VISUAL_PROMPT.INIT_A, cfg.MODEL.VISUAL_PROMPT.INIT_B)
+                nn.init.uniform_(self.encoder_prompt_embeddings.data, self.prompt_init_a, self.prompt_init_b)
             else:
                 self.encoder_prompt_embeddings = None
 
             if 'decoder' in self.prompt_modules:
                 num_layers = self.transformer.decoder.num_layers
                 self.decoder_prompt_embeddings = nn.Parameter(torch.zeros(num_layers, num_queries, hidden_dim))
-                nn.init.uniform_(self.decoder_prompt_embeddings.data, cfg.MODEL.VISUAL_PROMPT.INIT_A, cfg.MODEL.VISUAL_PROMPT.INIT_B)
+                nn.init.uniform_(self.decoder_prompt_embeddings.data, self.prompt_init_a, self.prompt_init_b)
             else:
                 self.decoder_prompt_embeddings = None
 
@@ -611,7 +613,9 @@ def build(cfg):
         deep_prompt=cfg.MODEL.VISUAL_PROMPT.DEEP,
         deep_shared_prompt=cfg.MODEL.VISUAL_PROMPT.DEEP_SHARED,
         num_prompt_tokens=cfg.MODEL.VISUAL_PROMPT.NUM_TOKENS,
-        prompt_dropout_rate=cfg.MODEL.VISUAL_PROMPT.DROPOUT_RATE
+        prompt_dropout_rate=cfg.MODEL.VISUAL_PROMPT.DROPOUT_RATE,
+        prompt_init_a=cfg.MODEL.VISUAL_PROMPT.INIT_A,
+        prompt_init_b=cfg.MODEL.VISUAL_PROMPT.INIT_B
     )
     if cfg.MODEL.MASKS:
         model = DETRsegm(model, freeze_detr=(cfg.MODEL.FROZEN_WEIGHTS is not None))
