@@ -144,7 +144,6 @@ _C.OUTPUT_DIR = '' # path where to save, empty for no saving
 _C.DEVICE = 'cuda' # device to use for training / testing
 _C.SEED = 42
 _C.RESUME = '' # resume from checkpoint
-_C.RESUME_MEMORY = '' # resume memory items from checkpoint
 _C.START_EPOCH = 0 # start epoch
 _C.EVAL = False
 _C.NUM_WORKERS = 2
