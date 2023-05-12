@@ -319,7 +319,7 @@ def main(cfg):
         # check the resumed model
         if not cfg.EVAL:
             test_stats, coco_evaluator = evaluate(
-                model, criterion, postprocessors, data_loader_val, base_ds, device, cfg.OUTPUT_DIR
+                model, criterion, postprocessors, data_loader_val, base_ds, device, cfg
             )
 
     # load checkpoint and start a new training
@@ -345,7 +345,7 @@ def main(cfg):
         print()
         print('Start evaluation before fine tuning')
         test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                              data_loader_val, base_ds, device, cfg, prefix='initialized_eval')
+                                              data_loader_val, base_ds, device, cfg, prefix='init_eval')
         
         log_stats = {**{f'test_{k}': v for k, v in test_stats.items()},
                      'epoch': 'before fine tuning',
