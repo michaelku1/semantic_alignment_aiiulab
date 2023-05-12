@@ -90,6 +90,8 @@ _C.MODEL.VISUAL_PROMPT.DEEP = True
 _C.MODEL.VISUAL_PROMPT.DEEP_SHARED = False
 _C.MODEL.VISUAL_PROMPT.NUM_TOKENS = None
 _C.MODEL.VISUAL_PROMPT.DROPOUT_RATE = 0.0
+_C.MODEL.VISUAL_PROMPT.INIT_A = -0.1
+_C.MODEL.VISUAL_PROMPT.INIT_B = 0.1
 
 # ------------------------------------------------------------------------
 # Loss

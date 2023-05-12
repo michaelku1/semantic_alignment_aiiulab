@@ -154,13 +154,13 @@ class DeformableDETR(nn.Module):
             # it only needs 1 prompt to input in the 1st layer of the encoder or decoder
             if 'encoder' in self.prompt_modules:
                 self.encoder_prompt_embeddings = nn.Parameter(torch.zeros(num_feature_levels, hidden_dim))
-                nn.init.uniform_(self.encoder_prompt_embeddings.data, -0.1, 0.1)
+                nn.init.uniform_(self.encoder_prompt_embeddings.data, cfg.MODEL.VISUAL_PROMPT.INIT_A, cfg.MODEL.VISUAL_PROMPT.INIT_B)
             else:
                 self.encoder_prompt_embeddings = None
 
             if 'decoder' in self.prompt_modules:
                 self.decoder_prompt_embeddings = nn.Parameter(torch.zeros(num_queries, hidden_dim))
-                nn.init.uniform_(self.decoder_prompt_embeddings.data, -0.1, 0.1)
+                nn.init.uniform_(self.decoder_prompt_embeddings.data, cfg.MODEL.VISUAL_PROMPT.INIT_A, cfg.MODEL.VISUAL_PROMPT.INIT_B)
             else:
                 self.decoder_prompt_embeddings = None
 
@@ -170,11 +170,11 @@ class DeformableDETR(nn.Module):
             assert 'encoder' in self.prompt_modules
 
             self.encoder_prompt_embeddings = nn.Parameter(torch.zeros(num_feature_levels, hidden_dim))
-            nn.init.uniform_(self.encoder_prompt_embeddings.data, -0.1, 0.1)
+            nn.init.uniform_(self.encoder_prompt_embeddings.data, cfg.MODEL.VISUAL_PROMPT.INIT_A, cfg.MODEL.VISUAL_PROMPT.INIT_B)
 
             if 'decoder' in self.prompt_modules:
                 self.decoder_prompt_embeddings = nn.Parameter(torch.zeros(num_queries, hidden_dim))
-                nn.init.uniform_(self.decoder_prompt_embeddings.data, -0.1, 0.1)
+                nn.init.uniform_(self.decoder_prompt_embeddings.data, cfg.MODEL.VISUAL_PROMPT.INIT_A, cfg.MODEL.VISUAL_PROMPT.INIT_B)
             else:
                 self.decoder_prompt_embeddings = None
 
@@ -184,14 +184,14 @@ class DeformableDETR(nn.Module):
             if 'encoder' in self.prompt_modules:
                 num_layers = self.transformer.encoder.num_layers
                 self.encoder_prompt_embeddings = nn.Parameter(torch.zeros(num_layers, num_feature_levels, hidden_dim))
-                nn.init.uniform_(self.encoder_prompt_embeddings.data, -0.1, 0.1)
+                nn.init.uniform_(self.encoder_prompt_embeddings.data, cfg.MODEL.VISUAL_PROMPT.INIT_A, cfg.MODEL.VISUAL_PROMPT.INIT_B)
             else:
                 self.encoder_prompt_embeddings = None
 
             if 'decoder' in self.prompt_modules:
                 num_layers = self.transformer.decoder.num_layers
                 self.decoder_prompt_embeddings = nn.Parameter(torch.zeros(num_layers, num_queries, hidden_dim))
-                nn.init.uniform_(self.decoder_prompt_embeddings.data, -0.1, 0.1)
+                nn.init.uniform_(self.decoder_prompt_embeddings.data, cfg.MODEL.VISUAL_PROMPT.INIT_A, cfg.MODEL.VISUAL_PROMPT.INIT_B)
             else:
                 self.decoder_prompt_embeddings = None
 
@@ -205,8 +205,6 @@ class DeformableDETR(nn.Module):
             self.prompt_proj = nn.Identity()
 
         self.prompt_dropout = nn.Dropout(self.prompt_dropout_rate)
-
-        # import pdb; pdb.set_trace()
 
     def forward(self, samples: NestedTensor, *args, **kwargs):
         """ The forward expects a NestedTensor, which consists of:
