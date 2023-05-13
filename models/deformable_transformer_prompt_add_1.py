@@ -375,6 +375,7 @@ class DeformableTransformerEncoder(nn.Module):
         # prompt_embeddings:
         #   [num_layers](num_feature_levels, d_model)
         #   (num_layers, num_feature_levels, d_model)
+        #   None
 
         output = src
         reference_points = self.get_reference_points(spatial_shapes, valid_ratios, device=src.device)
@@ -388,7 +389,6 @@ class DeformableTransformerEncoder(nn.Module):
             # prompt_embed:
             #   (num_feature_levels, d_model)
             #   None
-            # import pdb; pdb.set_trace()  # check `prompt_embed`
             
             output, space_query, channel_query = layer(
                 output, space_query, channel_query, pos, reference_points, spatial_shapes, level_start_index, padding_mask, prompt_embed
@@ -505,7 +505,7 @@ class DeformableTransformerDecoder(nn.Module):
         # query_pos: (N, #query, d_model)
         # src_padding_mask: (N, H_0W_0+...H_3W_3), `mask_flatten`
         # prompt_embeddings:
-        #   shallow: None
+        #   shallow: (num_queries, d_model)
         #   deep shared: (num_queries, d_model)
         #   deep:
         #       w/ decoder: (num_layers, num_queries, d_model)
@@ -513,11 +513,18 @@ class DeformableTransformerDecoder(nn.Module):
 
         if prompt_embeddings is not None:
             if prompt_embeddings.ndim == 2:
-                # deep shared
-                assert self.deep_prompt and self.deep_shared
-                prompt_embeddings = [prompt_embeddings for _ in range(self.num_layers)]
+                if not self.deep_shared:
+                    # shallow
+                    # prompt_embeddings: (num_queries, d_model)
+                    prompt_embeddings = [prompt_embeddings]  # for the 1st layer only
+                else:
+                    # deep shared
+                    # prompt_embeddings: (num_queries, d_model)
+                    assert self.deep_prompt and self.deep_shared
+                    prompt_embeddings = [prompt_embeddings for _ in range(self.num_layers)]
             elif prompt_embeddings.ndim == 3:
                 # deep
+                # prompt_embeddings: (num_layers, num_queries, d_model)
                 assert self.deep_prompt and not self.deep_shared
                 assert len(prompt_embeddings) == self.num_layers
             else:

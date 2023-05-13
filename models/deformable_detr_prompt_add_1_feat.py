@@ -261,7 +261,7 @@ class DeformableDETR(nn.Module):
         #   deep shared: (num_feature_levels, hidden_dim)
         #   deep: (num_layers, num_feature_levels, hidden_dim)
         # decoder_prompt_embeddings:
-        #   shallow: None
+        #   shallow: (num_queries, hidden_dim)
         #   deep shared: (num_queries, hidden_dim)
         #   deep:
         #       w/ decoder: (num_layers, num_queries, hidden_dim)
