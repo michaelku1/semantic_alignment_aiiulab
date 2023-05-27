@@ -409,7 +409,7 @@ def main(cfg):
         )
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                     **{f'test_src_{k}': v for k, v in test_tgt_stats.items()},
+                     **{f'test_src_{k}': v for k, v in test_src_stats.items()},
                      **{f'test_tgt_{k}': v for k, v in test_tgt_stats.items()},
                      'epoch': epoch,
                      'n_parameters': n_parameters}
