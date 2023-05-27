@@ -254,7 +254,6 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, cfg
             target_sizes = torch.stack([t["size"] for t in targets], dim=0)
             _results = postprocessors['bbox'](outputs, target_sizes)
             _res = {target['image_id'].item(): output for target, output in zip(targets, _results)}
-
             plot_bbox(
                 img_tensors=img_tensors,
                 res=_res,
@@ -314,7 +313,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, cfg
         coco_evaluator.accumulate()
         coco_evaluator.summarize()
     if coco_evaluators_per_class is not None:
-        for evaluator in coco_evaluators_per_class.values():
+        for cat_id, evaluator in coco_evaluators_per_class.items():
             cat_name = base_ds.cats[cat_id]['name']
             print(f'=== Class mAP ({cat_id}, {cat_name}) ===')
             evaluator.accumulate()
