@@ -191,48 +191,8 @@ class DADataset(Dataset):
             local_size=local_size
         )
 
-        self.img_ids = self.ori_img_ids = copy.deepcopy(self.source.ids)
-        self.label_counts = self.ori_label_counts = self.count_labels()  # {cat_id: #bbox}
-
     def __len__(self):
         return max(len(self.source), len(self.target))
-
-    def count_labels(self):
-        coco = self.source.coco
-        res = {cat_id: 0 for cat_id in coco.getCatIds()}
-
-        for img_id in self.img_ids:
-            anns = coco.imgToAnns[img_id]
-
-            for ann in anns:
-                cat_id = ann['category_id']
-                res[cat_id] += 1
-
-        print('label counts')
-        print(res)
-        print()
-        return res
-
-    def resample(self):
-        coco = self.source.coco
-        img_max_label_count = {
-            img_id: max(sum([ann['category_id'] == cat_id for ann in anns]) for cat_id in coco.getCatIds())
-            for img_id, anns in coco.imgToAnns.items()
-        }
-        img_max_label_count = {img_id: count for img_id, count in img_max_label_count.items() if count > 0}
-        
-        img_probas = {img_id: 1 / count for img_id, count in img_max_label_count.items()}
-        p_sum = sum([p**2 for p in img_probas.values()])
-        img_probas = {img_id: proba**2 / p_sum for img_id, proba in img_probas.items()}
-
-        self.img_ids = np.random.choice(
-            list(img_probas.keys()),
-            size=len(self.ori_img_ids),
-            replace=True,
-            p=list(img_probas.values())
-        )
-
-        self.label_counts = self.count_labels()
 
     # def __getitem__(self, idx):
     #     source_img, source_target = self.source[idx % len(self.source)]
@@ -241,7 +201,6 @@ class DADataset(Dataset):
     #     return source_img, target_img, source_target
 
     def __getitem__(self, idx):
-        idx = self.img_ids[idx]  # for resampling
         source_img, source_target = self.source[idx % len(self.source)]
         target_img, target_target = self.target[idx % len(self.target)]
 
@@ -266,11 +225,20 @@ def build(image_set, cfg):
     paths = get_paths(cfg.DATASET.COCO_PATH)
     source_domain, target_domain = cfg.DATASET.DATASET_FILE.split('_to_')
 
-
-    if image_set == 'val':
+    if image_set == 'val_target':
         return CocoDetection(
             img_folder=paths[target_domain]['val_img'],
             ann_file=paths[target_domain]['val_anno'],
+            transforms=make_coco_transforms(image_set),
+            return_masks=cfg.MODEL.MASKS,
+            cache_mode=cfg.CACHE_MODE,
+            local_rank=get_local_rank(),
+            local_size=get_local_size()
+        )
+    elif image_set == 'val_source':
+        return CocoDetection(
+            img_folder=paths[source_domain]['val_img'],
+            ann_file=paths[source_domain]['val_anno'],
             transforms=make_coco_transforms(image_set),
             return_masks=cfg.MODEL.MASKS,
             cache_mode=cfg.CACHE_MODE,
