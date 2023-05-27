@@ -342,10 +342,7 @@ def main(cfg):
         if len(unexpected_keys) > 0:
             print('Unexpected Keys: {}'.format(unexpected_keys))
 
-        if checkpoint['epoch']:
-            START_EPOCH = 0
-        else:
-            raise ValueError('missing resume model while finetune is on')
+        START_EPOCH = 0
 
         print()
         print('Start evaluation before fine tuning')
