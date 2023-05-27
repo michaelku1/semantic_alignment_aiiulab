@@ -84,21 +84,22 @@ def main(cfg):
     
     # coco transform
     dataset_train = build_dataset(image_set='train', cfg=cfg)
-    dataset_val = build_dataset(image_set='val', cfg=cfg)
-
-    # TODO sample subset for validation
-    # indices = torch.randperm(len(dataset_val))[:200]
+    dataset_val_src = build_dataset(image_set='val_source', cfg=cfg)
+    dataset_val_tgt = build_dataset(image_set='val_target', cfg=cfg)
 
     if cfg.DIST.DISTRIBUTED:
         if cfg.CACHE_MODE:
             sampler_train = samplers.NodeDistributedSampler(dataset_train)
-            sampler_val = samplers.NodeDistributedSampler(dataset_val, shuffle=False)
+            sampler_val_src = samplers.NodeDistributedSampler(dataset_val_src, shuffle=False)
+            sampler_val_tgt = samplers.NodeDistributedSampler(dataset_val_tgt, shuffle=False)
         else:
             sampler_train = samplers.DistributedSampler(dataset_train)
-            sampler_val = samplers.DistributedSampler(dataset_val, shuffle=False)
+            sampler_val_src = samplers.NodeDistributedSampler(dataset_val_src, shuffle=False)
+            sampler_val_tgt = samplers.DistributedSampler(dataset_val_tgt, shuffle=False)
     else:
         sampler_train = torch.utils.data.RandomSampler(dataset_train)
-        sampler_val = torch.utils.data.SequentialSampler(dataset_val)
+        sampler_val_src = samplers.NodeDistributedSampler(dataset_val_src, shuffle=False)
+        sampler_val_tgt = torch.utils.data.SequentialSampler(dataset_val_tgt)
 
     if cfg.DATASET.DA_MODE == 'uda':
         assert cfg.TRAIN.BATCH_SIZE % 2 == 0, f'cfg.TRAIN.BATCH_SIZE {cfg.TRAIN.BATCH_SIZE} should be a multiple of 2'
@@ -115,9 +116,12 @@ def main(cfg):
         data_loader_train = DataLoader(dataset_train, batch_sampler=batch_sampler_train,
                                        collate_fn=utils.collate_fn, num_workers=cfg.NUM_WORKERS,
                                        pin_memory=True)
-    data_loader_val = DataLoader(dataset_val, cfg.TRAIN.BATCH_SIZE, sampler=sampler_val,
-                                 drop_last=False, collate_fn=utils.collate_fn, num_workers=cfg.NUM_WORKERS,
-                                 pin_memory=True)
+    data_loader_val_src = DataLoader(dataset_val_src, cfg.TRAIN.BATCH_SIZE, sampler=sampler_val_src,
+                                     drop_last=False, collate_fn=utils.collate_fn, num_workers=cfg.NUM_WORKERS,
+                                     pin_memory=True)
+    data_loader_val_tgt = DataLoader(dataset_val_tgt, cfg.TRAIN.BATCH_SIZE, sampler=sampler_val_tgt,
+                                     drop_last=False, collate_fn=utils.collate_fn, num_workers=cfg.NUM_WORKERS,
+                                     pin_memory=True)
 
     # lr_backbone_names = ["backbone.0", "backbone.neck", "input_proj", "transformer.encoder"]
     def match_name_keywords(n, name_keywords):
@@ -272,9 +276,10 @@ def main(cfg):
     if cfg.DATASET.DATASET_FILE == "coco_panoptic":
         # We also evaluate AP during panoptic training, on original coco DS
         coco_val = datasets.coco.build("val", cfg)
-        base_ds = get_coco_api_from_dataset(coco_val)
+        base_ds_tgt = get_coco_api_from_dataset(coco_val)
     else:
-        base_ds = get_coco_api_from_dataset(dataset_val)
+        base_ds_src = get_coco_api_from_dataset(dataset_val_src)
+        base_ds_tgt = get_coco_api_from_dataset(dataset_val_tgt)
 
     if cfg.MODEL.FROZEN_WEIGHTS is not None:
         checkpoint = torch.load(cfg.MODEL.FROZEN_WEIGHTS, map_location='cpu')
@@ -318,8 +323,8 @@ def main(cfg):
 
         # check the resumed model
         if not cfg.EVAL:
-            test_stats, coco_evaluator = evaluate(
-                model, criterion, postprocessors, data_loader_val, base_ds, device, cfg, prefix='init_eval'
+            test_tgt_stats, coco_evaluator = evaluate(
+                model, criterion, postprocessors, data_loader_val_tgt, base_ds_tgt, device, cfg, prefix='init_eval'
             )
 
     # load checkpoint and start a new training
@@ -344,10 +349,13 @@ def main(cfg):
 
         print()
         print('Start evaluation before fine tuning')
-        test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                              data_loader_val, base_ds, device, cfg, prefix='init_eval')
+        test_src_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
+                                                  data_loader_val_src, base_ds_src, device, cfg, prefix='init_eval_tgt')
+        test_tgt_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
+                                                  data_loader_val_tgt, base_ds_tgt, device, cfg, prefix='init_eval_tgt')
         
-        log_stats = {**{f'test_{k}': v for k, v in test_stats.items()},
+        log_stats = {**{f'test_src_{k}': v for k, v in test_src_stats.items()},
+                     **{f'test_tgt_{k}': v for k, v in test_tgt_stats.items()},
                      'epoch': 'before fine tuning',
                      'n_parameters': n_parameters}
                      
@@ -360,8 +368,10 @@ def main(cfg):
         START_EPOCH = 0
 
     if cfg.EVAL:
-        test_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                              data_loader_val, base_ds, device, cfg, prefix='eval')
+        test_src_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
+                                                  data_loader_val_src, base_ds_src, device, cfg, prefix='eval_tgt')
+        test_tgt_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
+                                                  data_loader_val_tgt, base_ds_tgt, device, cfg, prefix='eval_tgt')
         if cfg.OUTPUT_DIR:
             utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
         return
@@ -391,12 +401,16 @@ def main(cfg):
                     'cfg': cfg,
                 }, checkpoint_path)
 
-        test_stats, coco_evaluator = evaluate(
-            model, criterion, postprocessors, data_loader_val, base_ds, device, cfg, prefix=f'eval_epoch={epoch}'
+        test_src_stats, coco_evaluator = evaluate(
+            model, criterion, postprocessors, data_loader_val_src, base_ds_src, device, cfg, prefix=f'eval_src_epoch={epoch}'
+        )
+        test_tgt_stats, coco_evaluator = evaluate(
+            model, criterion, postprocessors, data_loader_val_tgt, base_ds_tgt, device, cfg, prefix=f'eval_tgt_epoch={epoch}'
         )
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                     **{f'test_{k}': v for k, v in test_stats.items()},
+                     **{f'test_src_{k}': v for k, v in test_tgt_stats.items()},
+                     **{f'test_tgt_{k}': v for k, v in test_tgt_stats.items()},
                      'epoch': epoch,
                      'n_parameters': n_parameters}
 
