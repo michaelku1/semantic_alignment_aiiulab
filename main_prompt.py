@@ -344,21 +344,22 @@ def main(cfg):
 
         START_EPOCH = 0
 
-        print()
-        print('Start evaluation before fine tuning')
-        test_src_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                                  data_loader_val_src, base_ds_src, device, cfg, prefix='init_eval_tgt')
-        test_tgt_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                                  data_loader_val_tgt, base_ds_tgt, device, cfg, prefix='init_eval_tgt')
-        
-        log_stats = {**{f'test_src_{k}': v for k, v in test_src_stats.items()},
-                     **{f'test_tgt_{k}': v for k, v in test_tgt_stats.items()},
-                     'epoch': 'before fine tuning',
-                     'n_parameters': n_parameters}
-                     
-        if cfg.OUTPUT_DIR and utils.is_main_process():
-            with (output_dir / "log.txt").open("a") as f:
-                f.write(json.dumps(log_stats) + "\n")
+        if not cfg.EVAL:
+            print()
+            print('Start evaluation before fine tuning')
+            test_src_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
+                                                    data_loader_val_src, base_ds_src, device, cfg, prefix='init_eval_tgt')
+            test_tgt_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
+                                                    data_loader_val_tgt, base_ds_tgt, device, cfg, prefix='init_eval_tgt')
+            
+            log_stats = {**{f'test_src_{k}': v for k, v in test_src_stats.items()},
+                        **{f'test_tgt_{k}': v for k, v in test_tgt_stats.items()},
+                        'epoch': 'before fine tuning',
+                        'n_parameters': n_parameters}
+                        
+            if cfg.OUTPUT_DIR and utils.is_main_process():
+                with (output_dir / "log.txt").open("a") as f:
+                    f.write(json.dumps(log_stats) + "\n")
 
     # start a new training with random initialized weights
     else:
@@ -366,7 +367,7 @@ def main(cfg):
 
     if cfg.EVAL:
         test_src_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                                  data_loader_val_src, base_ds_src, device, cfg, prefix='eval_tgt')
+                                                  data_loader_val_src, base_ds_src, device, cfg, prefix='eval_src')
         test_tgt_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
                                                   data_loader_val_tgt, base_ds_tgt, device, cfg, prefix='eval_tgt')
         if cfg.OUTPUT_DIR:
