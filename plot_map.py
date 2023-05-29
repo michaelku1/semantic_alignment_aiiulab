@@ -13,8 +13,8 @@ def plot_map(log_path, plot_lr, plot_class_map=False, plot_max_prompt_norm=False
 
     df_log = pd.read_json(str(log_path), lines=True)
     df_log = get_rid_of_str_epoch(df_log)
-    src_coco_eval, _, _, src_class_coco_evals, _ = get_coco_eval_results(df_log, domain='source')
-    tgt_coco_eval, max_mAP, max_epoch, tgt_class_coco_evals, class_max_mAPs = get_coco_eval_results(df_log, domain='target')
+    src_coco_eval, src_max_mAP, src_max_epoch, src_class_coco_evals, _ = get_coco_eval_results(df_log, domain='source')
+    tgt_coco_eval, tgt_max_mAP, tgt_max_epoch, tgt_class_coco_evals, class_max_mAPs = get_coco_eval_results(df_log, domain='target')
 
     fig, ax = plt.subplots(figsize=(15, 8))
     if pretrained_log_path:
@@ -32,12 +32,17 @@ def plot_map(log_path, plot_lr, plot_class_map=False, plot_max_prompt_norm=False
         df_log = pd.concat([df_pretrained_log, df_log], ignore_index=True)
         coco_eval, max_mAP, max_epoch, class_coco_evals, class_max_mAPs = get_coco_eval_results(df_log)
     
-    title = f'Max mAP = {max_mAP:.4f} ({max_epoch}-th epoch)'
+    title = f'Max mAP = {tgt_max_mAP:.4f}'
     if pretrained_log_path:
          title += f' (baseline = {pretrained_max_mAP:.4f})'
 
     ax.plot(src_coco_eval, lw=3, marker='^', label='source')
+    ax.scatter(src_max_epoch, src_max_mAP, c='r', s=300, marker='*')
+    ax.text(x=src_max_epoch + 1, y=src_max_mAP + 0.001, s=f'({src_max_epoch}, {src_max_mAP:.4f})')
     ax.plot(tgt_coco_eval, lw=3, marker='o', label='target')
+    ax.scatter(tgt_max_epoch, tgt_max_mAP, c='r', s=300, marker='*')
+    ax.text(x=tgt_max_epoch + 1, y=tgt_max_mAP + 0.001, s=f'({tgt_max_epoch}, {tgt_max_mAP:.4f})')
+    
     if plot_class_map:
         for (cat_id, cat_name), coco_eval in src_class_coco_evals.items():
             class_max_mAP = class_max_mAPs[(cat_id, cat_name)]
