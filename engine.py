@@ -116,12 +116,16 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             prompt_parameters = [p for n, p in model.named_parameters() if 'prompt_embeddings' in n]
             prompt_norms = [torch.norm(p, dim=-1) for p in prompt_parameters]
             max_prompt_norm = max([torch.max(n).item() for n in prompt_norms])
-            prompt_grad_norm = utils.get_total_grad_norm(optimizer.param_groups[-1]['params'])
 
             metric_logger.update(lr_head=optimizer.param_groups[0]['lr'])
             metric_logger.update(lr_prompt=optimizer.param_groups[1]['lr'])
             metric_logger.update(max_prompt_norm=max_prompt_norm)
-            metric_logger.update(prompt_grad_norm=prompt_grad_norm)
+
+            if optimizer.param_groups[-1]['params']:
+                prompt_grad_norm = utils.get_total_grad_norm(optimizer.param_groups[-1]['params'])
+                metric_logger.update(prompt_grad_norm=prompt_grad_norm)
+            else:
+                metric_logger.update(prompt_grad_norm=0)
         else:
             metric_logger.update(lr=optimizer.param_groups[0]['lr'])
 
