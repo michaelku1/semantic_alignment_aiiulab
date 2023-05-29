@@ -225,7 +225,7 @@ def build(image_set, cfg):
     paths = get_paths(cfg.DATASET.COCO_PATH)
     source_domain, target_domain = cfg.DATASET.DATASET_FILE.split('_to_')
 
-    if image_set == 'val_target':
+    if image_set in ['val', 'val_target']:
         return CocoDetection(
             img_folder=paths[target_domain]['val_img'],
             ann_file=paths[target_domain]['val_anno'],
