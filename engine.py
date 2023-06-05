@@ -262,7 +262,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, cfg
                 img_tensors=img_tensors,
                 res=_res,
                 coco=data_loader.dataset.coco,
-                box_save_dir=Path(cfg.OUTPUT_DIR) / 'plot_bbox',
+                save_dir=Path(cfg.OUTPUT_DIR) / 'plot_bbox',
                 score_threshold=cfg.PLOT.SCORE_THRESHOLD,
                 img_ids=cfg.PLOT.IMG_IDS,
                 prefix=kwargs['prefix']
