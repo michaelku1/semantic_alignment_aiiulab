@@ -140,13 +140,13 @@ def plot_bbox(
     img_tensors: Dict,
     res: Dict,
     coco,
-    box_save_dir: str,
+    save_dir: str,
     score_threshold: int = 0.5,
     img_ids: Optional[List[int]] = None,
     prefix: Optional[str] = None
 ):
-    box_save_dir = Path(box_save_dir)
-    box_save_dir.mkdir(parents=True, exist_ok=True)
+    save_dir = Path(save_dir)
+    save_dir.mkdir(parents=True, exist_ok=True)
 
     img_ids = img_ids if img_ids is not None else coco.getImgIds()
 
@@ -175,6 +175,7 @@ def plot_bbox(
 
         output = res[img_id]
         label_count = {i: 0 for i in range(1, 9)}
+        import pdb; pdb.set_trace()
         for score, label, box in zip(output['scores'], output['labels'], output['boxes']):
             if score < score_threshold:
                 continue
@@ -207,7 +208,7 @@ def plot_bbox(
             y += 11 + 5
 
         file_name = f'{prefix}_img-id={img_id}.png' if prefix else f'img-id={img_id}.png'
-        save_path = Path(box_save_dir) / file_name
+        save_path = Path(save_dir) / file_name
         cv2.imwrite(str(save_path), img)
 
 
@@ -305,31 +306,3 @@ def img_tensor_to_cv2(img_tensor: torch.Tensor, normalized: bool = True) -> np.n
     img = img.copy()  # use `copy()` as https://github.com/opencv/opencv/issues/18120
 
     return img
-
-
-def resize_and_pad(img, target_size: int):
-    if img.ndim == 2:
-        img = img[:, :, None]
-    assert img.ndim == 3
-    assert img.shape[-1] in [1, 3]
-    assert isinstance(target_size, int)
-
-    h, w = img.shape[:2]
-    long_edge = max(h, w)
-    ratio = target_size / long_edge
-
-    new_h = int(h * ratio)
-    new_w = int(w * ratio)
-
-    img = cv2.resize(img, (new_w, new_h))
-
-    res = np.ones((target_size, target_size, 3)) * 255
-    pad = (target_size - min(new_h, new_w)) // 2
-
-    import pdb; pdb.set_trace()
-    if new_h >= new_w:
-        res[:, pad:pad + new_w, :] = img
-    else:
-        res[pad:pad + new_h, :, :] = img
-
-    return res
