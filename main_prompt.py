@@ -223,9 +223,6 @@ def main(cfg):
         ]
 
     elif cfg.MODEL.STAGE == 'visual_prompt_tuning':
-        if not cfg.FINETUNE:
-            raise ValueError('The config key `FINTUNE` should be set as `True` in visual prompt tuning')
-
         print()
         print('Visual prompt tuning parameters:')
         names = [
@@ -257,7 +254,7 @@ def main(cfg):
         ]
 
     else:
-        raise ValueError('please specify training mode')
+        raise ValueError('Please specify training mode')
 
     if cfg.TRAIN.SGD:
         optimizer = torch.optim.SGD(param_dicts, lr=cfg.TRAIN.LR, momentum=0.9,
@@ -286,6 +283,14 @@ def main(cfg):
         model_without_ddp.detr.load_state_dict(checkpoint['model'])
 
     output_dir = Path(cfg.OUTPUT_DIR)
+
+    if cfg.EVAL and cfg.FINETUNE:
+        raise ValueError('Please turn off `FINETUNE` when evaluation')
+
+    if cfg.MODEL.STAGE == 'visual_prompt_tuning':
+        if not cfg.EVAL:
+            if not cfg.FINETUNE:
+                raise ValueError('The config key `FINTUNE` should be set as `True` in visual prompt tuning')
 
     # load checkpoint and continue training
     if cfg.RESUME and not cfg.FINETUNE: # [BUG] write after freezing cfgs
@@ -366,10 +371,11 @@ def main(cfg):
         START_EPOCH = 0
 
     if cfg.EVAL:
+        CURRENT_EPOCH = checkpoint['epoch']
         test_src_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                                  data_loader_val_src, base_ds_src, device, cfg, prefix='eval_src')
+                                                  data_loader_val_src, base_ds_src, device, cfg, prefix=f'eval_src_epoch={CURRENT_EPOCH}')
         test_tgt_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                                  data_loader_val_tgt, base_ds_tgt, device, cfg, prefix='eval_tgt')
+                                                  data_loader_val_tgt, base_ds_tgt, device, cfg, prefix=f'eval_tgt_epoch={CURRENT_EPOCH}')
         if cfg.OUTPUT_DIR:
             utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
         return
