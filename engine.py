@@ -18,7 +18,9 @@ import sys
 from typing import Iterable
 
 import torch
+import torch.nn as nn
 import util.misc as utils
+from models.utils import DomainAttention
 from datasets.coco_eval import CocoEvaluator
 from datasets.panoptic_eval import PanopticEvaluator
 from datasets.data_prefetcher import data_prefetcher
@@ -34,6 +36,44 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     device: torch.device, epoch: int,
                     postprocessors, cfg=None, **kwargs):
     model.train()
+    if cfg.MODEL.VISUAL_PROMPT.SWITCH:
+        # set model in evaluation (inference) mode
+        # because `DeformableDETR` has group norm layers and
+        # `DeformableTransformer` has dropout and layer norm layers
+        for layers in model.module.input_proj:
+            for l in layers:
+                if isinstance(l, nn.GroupNorm):
+                    l.eval()
+        for encoder_layer in model.module.transformer.encoder.layers:
+            encoder_layer.dropout1.eval()
+            encoder_layer.dropout2.eval()
+            encoder_layer.dropout3.eval()
+            encoder_layer.norm1.eval()
+            encoder_layer.norm2.eval()
+
+            if hasattr(encoder_layer, 'space_attn'):
+                for m in encoder_layer.space_attn.modules():
+                    if isinstance(m, (nn.LayerNorm, nn.Dropout, nn.MultiheadAttention)):
+                        m.eval()
+            if hasattr(encoder_layer, 'channel_attn'):
+                for m in encoder_layer.channel_attn.modules():
+                    if isinstance(m, (nn.LayerNorm, nn.Dropout, nn.MultiheadAttention)):
+                        m.eval()
+        for decoder_layer in model.module.transformer.decoder.layers:
+            decoder_layer.self_attn.eval()
+            decoder_layer.dropout1.eval()
+            decoder_layer.dropout2.eval()
+            decoder_layer.dropout3.eval()
+            decoder_layer.dropout4.eval()
+            decoder_layer.norm1.eval()
+            decoder_layer.norm2.eval()
+            decoder_layer.norm3.eval()
+
+            if hasattr(decoder_layer, 'instance_attn'):
+                for m in decoder_layer.instance_attn.modules():
+                    if isinstance(m, (nn.LayerNorm, nn.Dropout, nn.MultiheadAttention)):
+                        m.eval()
+            
     criterion.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('class_error', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
@@ -42,7 +82,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         metric_logger.add_meter('lr_head', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
         metric_logger.add_meter('lr_prompt', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
         metric_logger.add_meter('max_prompt_norm', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
-        metric_logger.add_meter('prompt_grad_norm', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
+        metric_logger.add_meter('prompt_grad_norm', utils.SmoothedValue(window_size=1, fmt='{value:.10f}'))
     else:
         metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = 'Epoch: [{}]'.format(epoch)
@@ -52,6 +92,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     samples, targets = prefetcher.next()  # samples have been transformed at this stage
 
     data_loader_len = len(data_loader)
+    data_domain_type = getattr(data_loader.dataset, 'data_domain_type', 'src+tgt')
     
     # for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
     ### value on the left is current and value on the right is smoothed value
@@ -70,7 +111,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
         # DEBUG for nan grad
         # with torch.autograd.detect_anomaly():
-        outputs = model(samples)
+        outputs = model(samples, data_domain_type=data_domain_type)
         loss_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict
 
@@ -213,11 +254,13 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, cfg
             output_dir=os.path.join(cfg.OUTPUT_DIR, "panoptic_eval"),
         )
 
+    data_domain_type = getattr(data_loader.dataset, 'data_domain_type', 'src+tgt')
+
     for samples, targets in metric_logger.log_every(data_loader, 10, header):
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
         
-        outputs = model(samples)
+        outputs = model(samples, data_domain_type=data_domain_type)
         loss_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict
 

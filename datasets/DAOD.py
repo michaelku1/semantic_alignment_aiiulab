@@ -191,6 +191,8 @@ class DADataset(Dataset):
             local_size=local_size
         )
 
+        self.data_domain_type = 'src+tgt'
+
     def __len__(self):
         return max(len(self.source), len(self.target))
 

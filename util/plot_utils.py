@@ -175,7 +175,6 @@ def plot_bbox(
 
         output = res[img_id]
         label_count = {i: 0 for i in range(1, 9)}
-        import pdb; pdb.set_trace()
         for score, label, box in zip(output['scores'], output['labels'], output['boxes']):
             if score < score_threshold:
                 continue

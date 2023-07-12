@@ -45,6 +45,8 @@ class CocoDetection(VisionDataset):
             self.cache = {}
             self.cache_images()
 
+        self.data_domain_type = 'tgt_only' if 'foggy' in str(root) else 'src_only'
+
     def cache_images(self):
         self.cache = {}
         for index, img_id in zip(tqdm.trange(len(self.ids)), self.ids):

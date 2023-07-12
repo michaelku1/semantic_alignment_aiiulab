@@ -267,7 +267,8 @@ def main(cfg):
 
     # model DDP
     if cfg.DIST.DISTRIBUTED:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[cfg.DIST.GPU])
+        # model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[cfg.DIST.GPU])  # original implementation
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[cfg.DIST.GPU], find_unused_parameters=True)  # for vpt
         model_without_ddp = model.module
 
     if cfg.DATASET.DATASET_FILE == "coco_panoptic":
@@ -353,9 +354,9 @@ def main(cfg):
             print()
             print('Start evaluation before fine tuning')
             test_src_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                                    data_loader_val_src, base_ds_src, device, cfg, prefix='init_eval_tgt')
+                                                      data_loader_val_src, base_ds_src, device, cfg, prefix='init_eval_tgt')
             test_tgt_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                                    data_loader_val_tgt, base_ds_tgt, device, cfg, prefix='init_eval_tgt')
+                                                      data_loader_val_tgt, base_ds_tgt, device, cfg, prefix='init_eval_tgt')
             
             log_stats = {**{f'test_src_{k}': v for k, v in test_src_stats.items()},
                         **{f'test_tgt_{k}': v for k, v in test_tgt_stats.items()},
@@ -371,7 +372,7 @@ def main(cfg):
         START_EPOCH = 0
 
     if cfg.EVAL:
-        CURRENT_EPOCH = checkpoint['epoch']
+        CURRENT_EPOCH = checkpoint['epoch'] if 'epoch' in checkpoint else -1
         test_src_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
                                                   data_loader_val_src, base_ds_src, device, cfg, prefix=f'eval_src_epoch={CURRENT_EPOCH}')
         test_tgt_stats, coco_evaluator = evaluate(model, criterion, postprocessors,

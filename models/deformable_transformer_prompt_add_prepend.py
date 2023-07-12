@@ -20,7 +20,15 @@ from torch.nn.init import xavier_uniform_, constant_, uniform_, normal_
 
 from util.misc import inverse_sigmoid
 from models.ops.modules import MSDeformAttn
-from models.utils import DomainAttention, GradientReversal, remove_mask_and_warp, add_1_prompt_embed_to_src, add_1_prompt_embed_to_tgt
+from models.utils import (
+    DomainAttention,
+    GradientReversal,
+    remove_mask_and_warp,
+    get_valid_ratio,
+    get_reference_points,
+    add_prompt_embed_to_src,
+    prepend_prompt_to_tgt
+)
 
 class DeformableTransformer(nn.Module):
     def __init__(self, d_model=256, nhead=8,
@@ -52,8 +60,7 @@ class DeformableTransformer(nn.Module):
 
         decoder_layer = DeformableTransformerDecoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
-                                                          num_feature_levels, nhead, dec_n_points, instance_align,
-                                                          deep_prompt, deep_shared)
+                                                          num_feature_levels, nhead, dec_n_points, instance_align)
         self.decoder = DeformableTransformerDecoder(decoder_layer, num_decoder_layers, return_intermediate_dec, deep_prompt, deep_shared)
 
         self.level_embed = nn.Parameter(torch.Tensor(num_feature_levels, d_model))
@@ -138,20 +145,30 @@ class DeformableTransformer(nn.Module):
         return output_memory, output_proposals
 
     def get_valid_ratio(self, mask):
+        # mask: (N, h, w)
+        #   True for ignoring the corresponding keys in attention
+        #   False for paying attention to the corresponding keys
+
         _, H, W = mask.shape
-        valid_H = torch.sum(~mask[:, :, 0], 1)
-        valid_W = torch.sum(~mask[:, 0, :], 1)
+        valid_H = torch.sum(~mask[:, :, 0], 1)  # (bz,), real heights of images
+        valid_W = torch.sum(~mask[:, 0, :], 1)  # (bz,), ral widths of images
         valid_ratio_h = valid_H.float() / H
         valid_ratio_w = valid_W.float() / W
-        valid_ratio = torch.stack([valid_ratio_w, valid_ratio_h], -1)
+        valid_ratio = torch.stack([valid_ratio_w, valid_ratio_h], -1)  # (bz, 2)
         return valid_ratio
 
     def forward(
         self, srcs, masks, pos_embeds, query_embed=None,
-        src_encoder_prompt_embeddings=None, tgt_encoder_prompt_embeddings=None,
-        src_decoder_prompt_embeddings=None, tgt_decoder_prompt_embeddings=None
+        src_encoder_prompt_embeds=None, tgt_encoder_prompt_embeds=None,
+        src_decoder_prompt_embeds=None, tgt_decoder_prompt_embeds=None,
+        data_domain_type='src+tgt', prompt_domain_type='same'
     ):
         assert self.two_stage or query_embed is not None
+
+        # xxx_prompt_embed:
+        #   (num_prompt_tokens, hidden_dim * 2)
+        #   (num_layer, num_prompt_tokens, hidden_dim * 2)
+        #   None
 
         # prepare input for encoder
         src_flatten = []
@@ -174,10 +191,11 @@ class DeformableTransformer(nn.Module):
         lvl_pos_embed_flatten = torch.cat(lvl_pos_embed_flatten, 1)
         spatial_shapes = torch.as_tensor(spatial_shapes, dtype=torch.long, device=src_flatten.device)
         level_start_index = torch.cat((spatial_shapes.new_zeros((1, )), spatial_shapes.prod(1).cumsum(0)[:-1]))
-        valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)
+        valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)  # (bz, #lvl, 2=(w, h))
 
         space_query, channel_query, instance_query = None, None, None
-        if self.training:
+        # if self.training:  # original implementation
+        if self.training or not self.training:  # compute uda loss even when model is in evaluation
             if self.space_align:
                 space_query = self.space_query.expand(src_flatten.shape[0], -1, -1)
             if self.channel_align:
@@ -189,11 +207,12 @@ class DeformableTransformer(nn.Module):
         # encoder
         memory, space_query, channel_query = self.encoder(
             src_flatten, space_query, channel_query, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten, mask_flatten,
-            src_encoder_prompt_embeddings, tgt_encoder_prompt_embeddings
+            src_encoder_prompt_embeds, tgt_encoder_prompt_embeds
         )
 
         da_output = {}
-        if self.training:
+        # if self.training:  # original implementation
+        if self.training or not self.training:  # compute uda loss even when model is in evaluation
             if self.space_align:
                 da_output['space_query'] = torch.cat(space_query, dim=1)
             if self.channel_align:
@@ -217,30 +236,32 @@ class DeformableTransformer(nn.Module):
             pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
             query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
         else:
-            # query_embed: (#query, d_model * 2)
-            query_embed, tgt = torch.split(query_embed, c, dim=1)  # tgt: object queries, query_embed: positional embedding of object queries
-            query_embed = query_embed.unsqueeze(0).expand(bs, -1, -1)  # (N, #query, d_model)
-            tgt = tgt.unsqueeze(0).expand(bs, -1, -1)  # (N, #query, d_model)
+            query_embed, tgt = torch.split(query_embed, c, dim=1)
+            query_embed = query_embed.unsqueeze(0).expand(bs, -1, -1)
+            tgt = tgt.unsqueeze(0).expand(bs, -1, -1)
             reference_points = self.reference_points(query_embed).sigmoid()
             init_reference_out = reference_points
 
-        if self.training and self.instance_align:
+        # if self.training and self.instance_align:  # original implementation
+        if self.instance_align:  # compute uda loss even when model is in evaluation
             instance_query = self.instance_query.expand(tgt.shape[0], -1, -1)
 
         # decoder
         hs, inter_references, instance_query = self.decoder(
             tgt, instance_query, reference_points, memory, spatial_shapes, level_start_index, valid_ratios, query_embed, mask_flatten,
-            src_decoder_prompt_embeddings, tgt_decoder_prompt_embeddings
+            src_decoder_prompt_embeds, tgt_decoder_prompt_embeds,
+            data_domain_type, prompt_domain_type
         )
 
-        if self.training and self.instance_align:
+        # if self.training and self.instance_align:  # original implementation
+        if self.instance_align:  # compute uda loss even when model is in evaluation
             da_output['instance_query'] = instance_query
 
         inter_references_out = inter_references
         if self.two_stage:
             return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact, da_output
         
-        return memory, hs, init_reference_out, inter_references_out, None, None, da_output
+        return hs, init_reference_out, inter_references_out, None, None, da_output
 
 
 class DeformableTransformerEncoderLayer(nn.Module):
@@ -249,7 +270,7 @@ class DeformableTransformerEncoderLayer(nn.Module):
                  dropout=0.1, activation="relu",
                  n_levels=4, n_heads=8, n_points=4,
                  space_align=False, channel_align=False,
-                 deep_prompt=True, deep_shared=False):
+                deep_prompt=True, deep_shared=False):
         super().__init__()
 
         self.space_align = space_align
@@ -297,11 +318,13 @@ class DeformableTransformerEncoderLayer(nn.Module):
         # spatial_shapes: (#lvl, 2), the feature shape in each level
         # level_start_index: tensor([0, H_0W_0=14028, H_0W_0+H_1W_1=17556, H_0W_0+H_1W_1+H_2W_2=18438])
         # xxx_prompt_embed:
-        #   (num_feature_levels, d_model)
+        #   [num_feature_levels](h, w, d_model)
         #   None
 
         if src_prompt_embed is not None or tgt_prompt_embed is not None:
-            src = add_1_prompt_embed_to_src(src, level_start_index, src_prompt_embed, tgt_prompt_embed)
+            src = add_prompt_embed_to_src(src, spatial_shapes, src_prompt_embed, tgt_prompt_embed)
+
+        # import pdb; pdb.set_trace()
 
         # self attention
         src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
@@ -337,7 +360,6 @@ class DeformableTransformerEncoder(nn.Module):
     def get_reference_points(spatial_shapes, valid_ratios, device):
         reference_points_list = []
         for lvl, (H_, W_) in enumerate(spatial_shapes):
-
             ref_y, ref_x = torch.meshgrid(torch.linspace(0.5, H_ - 0.5, H_, dtype=torch.float32, device=device),
                                           torch.linspace(0.5, W_ - 0.5, W_, dtype=torch.float32, device=device))
             ref_y = ref_y.reshape(-1)[None] / (valid_ratios[:, None, lvl, 1] * H_)
@@ -361,36 +383,34 @@ class DeformableTransformerEncoder(nn.Module):
         # pos: (N, H_0W_0+...H_3W_3, C)
         # padding_mask: (N, H_0W_0+...H_3W_3)
         # xxx_prompt_embeddings:
-        #   shallow: (num_feature_levels, d_model)
-        #   deep shared: (num_feature_levels, d_model)
-        #   deep: (num_layers, num_feature_levels, d_model)
+        #   shallow: [num_feature_levels](h, w, hidden_dim)
+        #   deep shared: [num_feature_levels](h, w, hidden_dim)
+        #   deep: [num_layers][num_feature_levels](h, w, hidden_dim)
 
         prompt_embeddings_dict = {'src': src_prompt_embeddings, 'tgt': tgt_prompt_embeddings}
         for domain, prompt_embeddings in prompt_embeddings_dict.items():
             if prompt_embeddings is not None:
-                if prompt_embeddings.ndim == 2:
-                    # shallow or deep shared
-                    if not self.deep_prompt:
-                        # shallow
-                        # prompt_embeddings: (num_feature_levels, d_model)
-                        prompt_embeddings_dict[domain] = [prompt_embeddings]  # for the 1st layer only
-                    else:
-                        # deep shared
-                        # prompt_embeddings: (num_feature_levels, d_model)
-                        assert self.deep_shared
-                        prompt_embeddings_dict[domain] = [prompt_embeddings for _ in range(self.num_layers)]
-                elif prompt_embeddings.ndim == 3:
+                assert isinstance(prompt_embeddings, (list, nn.ParameterList))
+
+                if isinstance(prompt_embeddings[0], (list, nn.ParameterList)):
                     # deep
-                    # prompt_embeddings: (num_layers, num_feature_levels, d_model)
                     assert self.deep_prompt and not self.deep_shared
                     assert len(prompt_embeddings) == self.num_layers
+
+                elif isinstance(prompt_embeddings[0], nn.Parameter):
+                    # shallow or deep_shared
+                    if not self.deep_shared:
+                        # shallow
+                        prompt_embeddings_dict[domain] = [prompt_embeddings]  # [1][num_feature_levels](h, w, hidden_dim)
+                    else:
+                        # deep shared
+                        prompt_embeddings_dict[domain] = [prompt_embeddings for _ in range(self.num_layers)]  # [num_layers][num_feature_levels](h, w, hidden_dim)
                 else:
                     raise ValueError('Known shape of prompt embedding:', prompt_embeddings.shape)
         src_prompt_embeddings = prompt_embeddings_dict['src']
         tgt_prompt_embeddings = prompt_embeddings_dict['tgt']
         # xxx_prompt_embeddings:
-        #   [num_layers](num_feature_levels, d_model)
-        #   (num_layers, num_feature_levels, d_model)
+        #   [num_layers][num_feature_levels](h, w, d_model)
         #   None
 
         # import pdb; pdb.set_trace()
@@ -409,11 +429,11 @@ class DeformableTransformerEncoder(nn.Module):
                 if layer_idx < len(tgt_prompt_embeddings):
                     tgt_prompt_embed = tgt_prompt_embeddings[layer_idx]
             # xxx_prompt_embed:
-            #   (num_feature_levels, d_model)
+            #   [num_feature_levels](h, w, d_model)
             #   None
 
             # import pdb; pdb.set_trace()
-            
+
             output, space_query, channel_query = layer(
                 output, space_query, channel_query, pos, reference_points, spatial_shapes, level_start_index, padding_mask,
                 src_prompt_embed, tgt_prompt_embed
@@ -428,14 +448,10 @@ class DeformableTransformerDecoderLayer(nn.Module):
     def __init__(self, d_model=256, d_ffn=1024,
                  dropout=0.1, activation="relu",
                  n_levels=4, n_heads=8, n_points=4,
-                 instance_align=False,
-                 deep_prompt=True, deep_shared=False):
+                 instance_align=False):
         super().__init__()
 
         self.instance_align = instance_align
-        self.deep_prompt = deep_prompt
-        self.deep_shared = deep_shared
-
         if instance_align:
             self.instance_attn = DomainAttention(d_model, n_heads, dropout)
 
@@ -469,26 +485,121 @@ class DeformableTransformerDecoderLayer(nn.Module):
 
     def forward(
         self, tgt, instance_query, query_pos, reference_points, src, src_spatial_shapes, level_start_index, src_padding_mask=None,
-        src_prompt_embed=None, tgt_prompt_embed=None
+        src_prompt_embed=None, tgt_prompt_embed=None, data_domain_type='src+tgt', prompt_domain_type='same'
     ):
         # tgt: (N, #query, d_model), object queries
         # instance_query: (N, 1, d_model)
-        # reference_points: (N, #query, 2), initially predicted reference point coordinates by the small network `DeformableTransformer.reference_points`
+        # query_pos: (N, #query, d_model)
+        # reference_points: (2, #query, 4, 2), ?
         # src: (N, H_0W_0+...H_3W_3, C), `memory` from encoder, transformed feature map
         # src_spatial_shapes: (#lvl, 2), the feature shape in each level
-        # src_level_start_index: tensor([0, H_0W_0=14028, H_0W_0+H_1W_1=17556, H_0W_0+H_1W_1+H_2W_2=18438])
-        # src_valid_ratios: (2, 4, 2), ?
-        # query_pos: (N, #query, d_model)
-        # src_padding_mask: (N, H_0W_0+...H_3W_3), `mask_flatten`
+        # level_start_index: tensor([0, H_0W_0=14028, H_0W_0+H_1W_1=17556, H_0W_0+H_1W_1+H_2W_2=18438])
+        # src_padding_mask:
+        #
         # xxx_prompt_embed:
-        #   (num_queries, d_model)
+        #   (num_prompt_tokens, hidden_dim * 2)
+        #   None
 
-        if src_prompt_embed is not None or tgt_prompt_embed is not None:
-            tgt = add_1_prompt_embed_to_tgt(tgt, src_prompt_embed, tgt_prompt_embed)
-        
+        # TODO:
+
+        N, num_query, C = tgt.shape
+        src_prompt_pos = tgt_prompt_pos = None
+        if src_prompt_embed is not None:
+            src_prompt_embed, src_prompt_pos = torch.split(src_prompt_embed, C, dim=-1)
+        if tgt_prompt_embed is not None:
+            tgt_prompt_embed, tgt_prompt_pos = torch.split(tgt_prompt_embed, C, dim=-1)
+        # xxx_prompt_embed:
+        #   (num_prompt_tokens, hidden_dim)
+        #   None
+        # xxx_prompt_pos:
+        #   (num_prompt_tokens, hidden_dim)
+        #   None
+
         # self attention
-        q = k = self.with_pos_embed(tgt, query_pos)
-        tgt2 = self.self_attn(q.transpose(0, 1), k.transpose(0, 1), tgt.transpose(0, 1))[0].transpose(0, 1)
+        # ↓↓↓ the original implementation ↓↓↓
+        # q = k = self.with_pos_embed(tgt, query_pos)
+        # tgt2 = self.self_attn(q.transpose(0, 1), k.transpose(0, 1), tgt.transpose(0, 1))[0].transpose(0, 1)
+        # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
+
+        # import pdb; pdb.set_trace()
+        
+        # ↓↓↓ prepend prompts ↓↓↓
+        if prompt_domain_type == 'tgt_only':
+            assert src_prompt_embed is None
+
+            if data_domain_type == 'src+tgt':
+                # only apply prompt to the images from the target domain
+                assert N % 2 == 0
+                src_tgt, tgt_tgt = torch.split(tgt, N // 2, dim=0)  # (N//2, #query, d_model)
+                src_pos, tgt_pos = torch.split(query_pos, N // 2, dim=0)  # (N//2, #query, d_model)
+
+                src_q = src_k = self.with_pos_embed(src_tgt, src_pos)  # (N//2, #query, d_model)
+                src_tgt2 = self.self_attn(src_q.transpose(0, 1), src_k.transpose(0, 1), src_tgt.transpose(0, 1))[0].transpose(0, 1)  # (N//2, #query, d_model)
+
+                tgt_q = tgt_k = self.with_pos_embed(tgt_tgt, tgt_pos)  # (N//2, #query, d_model)
+                tgt_k = prepend_prompt_to_tgt(tgt_k, None, self.with_pos_embed(tgt_prompt_embed, tgt_prompt_pos))  # (N//2, #query + num_prompt_tokens, d_model)
+                tgt_v = prepend_prompt_to_tgt(tgt_tgt, None, self.with_pos_embed(tgt_prompt_embed, None))  # (N//2, #query + num_prompt_tokens, d_model)
+                tgt_tgt2 = self.self_attn(tgt_q.transpose(0, 1), tgt_k.transpose(0, 1), tgt_v.transpose(0, 1))[0].transpose(0, 1)
+                # tgt_q: (#query, N//2, d_model)
+                # tgt_k: (#query + num_prompt_tokens, N//2, d_model)
+                # tgt_v: (#query + num_prompt_tokens, N//2, d_model)
+
+                tgt2 = torch.cat([src_tgt2, tgt_tgt2], dim=0)
+                # import pdb; pdb.set_trace()  # checked!
+
+            elif data_domain_type == 'src_only':
+                q = k = self.with_pos_embed(tgt, query_pos)
+                tgt2 = self.self_attn(q.transpose(0, 1), k.transpose(0, 1), tgt.transpose(0, 1))[0].transpose(0, 1)
+                # import pdb; pdb.set_trace()  # checked!
+
+            elif data_domain_type == 'tgt_only':
+                q = k = self.with_pos_embed(tgt, query_pos)  # (N, #query, d_model)
+                k = prepend_prompt_to_tgt(k, None, self.with_pos_embed(tgt_prompt_embed, tgt_prompt_pos))  # (N, #query + num_prompt_tokens, d_model)
+                v = prepend_prompt_to_tgt(tgt, None, self.with_pos_embed(tgt_prompt_embed, None))  # (N, #query + num_prompt_tokens, d_model)
+                tgt2 = self.self_attn(q.transpose(0, 1), k.transpose(0, 1), v.transpose(0, 1))[0].transpose(0, 1)  # (N, #query, d_model)
+                # import pdb; pdb.set_trace()  # checked!
+            
+        else:
+            # `prompt_domain_type` is one of 'same', 'separate', or 'inverse'
+            assert src_prompt_embed is not None
+
+            if data_domain_type == 'src+tgt':
+                assert N % 2 == 0
+                src_tgt, tgt_tgt = torch.split(tgt, N // 2, dim=0)  # (N//2, #query, d_model)
+                src_pos, tgt_pos = torch.split(query_pos, N // 2, dim=0)  # (N//2, #query, d_model)
+
+                src_q = src_k = self.with_pos_embed(src_tgt, src_pos)  # (N//2, #query, d_model)
+                src_k = prepend_prompt_to_tgt(src_k, self.with_pos_embed(src_prompt_embed, src_prompt_pos), None)  # (N//2, #query + num_prompt_tokens, d_model)
+                src_v = prepend_prompt_to_tgt(src_tgt, src_prompt_embed, None)  # (N//2, #query + num_prompt_tokens, d_model)
+                src_tgt2 = self.self_attn(src_q.transpose(0, 1), src_k.transpose(0, 1), src_v.transpose(0, 1))[0].transpose(0, 1)  # (N//2, #query, d_model)
+
+                tgt_q = tgt_k = self.with_pos_embed(tgt_tgt, tgt_pos)  # (N//2, #query, d_model)
+                tgt_k = prepend_prompt_to_tgt(tgt_k, None, self.with_pos_embed(tgt_prompt_embed, tgt_prompt_pos))  # (N//2, #query + num_prompt_tokens, d_model)
+                tgt_v = prepend_prompt_to_tgt(tgt_tgt, None, self.with_pos_embed(tgt_prompt_embed, None))  # (N//2, #query + num_prompt_tokens, d_model)
+                tgt_tgt2 = self.self_attn(tgt_q.transpose(0, 1), tgt_k.transpose(0, 1), tgt_v.transpose(0, 1))[0].transpose(0, 1)  # (N//2, #query, d_model)
+
+                tgt2 = torch.cat([src_tgt2, tgt_tgt2], dim=0)
+                # import pdb; pdb.set_trace()  # checked!
+
+            elif data_domain_type == 'src_only':
+                q = k = self.with_pos_embed(tgt, query_pos)  # (N, #query, d_model)
+                k = prepend_prompt_to_tgt(k, self.with_pos_embed(src_prompt_embed, src_prompt_pos), None)  # (N, #query + num_prompt_tokens, d_model)
+                v = prepend_prompt_to_tgt(tgt, self.with_pos_embed(src_prompt_embed, None), None)  # (N, #query + num_prompt_tokens, d_model)
+                tgt2 = self.self_attn(q.transpose(0, 1), k.transpose(0, 1), v.transpose(0, 1))[0].transpose(0, 1)  # (N, #query, d_model)
+                # import pdb; pdb.set_trace()  # checked!
+
+            elif data_domain_type == 'tgt_only':
+                q = k = self.with_pos_embed(tgt, query_pos)  # (N, #query, d_model)
+                k = prepend_prompt_to_tgt(k, None, self.with_pos_embed(tgt_prompt_embed, tgt_prompt_pos))  # (N, #query + num_prompt_tokens, d_model)
+                v = prepend_prompt_to_tgt(tgt, None, self.with_pos_embed(tgt_prompt_embed, None))  # (N, #query + num_prompt_tokens, d_model)
+                tgt2 = self.self_attn(q.transpose(0, 1), k.transpose(0, 1), v.transpose(0, 1))[0].transpose(0, 1)  # (N, #query, d_model)
+                # import pdb; pdb.set_trace()  # checked!
+
+        assert tgt2.shape[0] == N
+        assert tgt2.shape[1] == num_query
+        assert tgt2.shape[2] == C
+        # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
+
         tgt = tgt + self.dropout2(tgt2)
         tgt = self.norm2(tgt)
 
@@ -520,9 +631,12 @@ class DeformableTransformerDecoder(nn.Module):
         self.bbox_embed = None
         self.class_embed = None
 
-    def forward(self, tgt, instance_query, reference_points, src, src_spatial_shapes, src_level_start_index, src_valid_ratios,
-                query_pos=None, src_padding_mask=None,
-                src_prompt_embeddings=None, tgt_prompt_embeddings=None):
+    def forward(
+        self, tgt, instance_query, reference_points, src, src_spatial_shapes, src_level_start_index, src_valid_ratios,
+        query_pos=None, src_padding_mask=None,
+        src_decoder_prompt_embeds=None, tgt_decoder_prompt_embeds=None,
+        data_domain_type='src+tgt', prompt_domain_type='same'
+    ):
         # tgt: (N, #query, d_model), object queries
         # instance_query: (N, 1, d_model)
         # reference_points: (N, #query, 2), initially predicted reference point coordinates by the small network `DeformableTransformer.reference_points`
@@ -532,38 +646,39 @@ class DeformableTransformerDecoder(nn.Module):
         # src_valid_ratios: (2, 4, 2), ?
         # query_pos: (N, #query, d_model)
         # src_padding_mask: (N, H_0W_0+...H_3W_3), `mask_flatten`
-        # xxx_prompt_embeddings:
-        #   shallow: (num_queries, d_model)
-        #   deep shared: (num_queries, d_model)
-        #   deep:
-        #       w/ decoder: (num_layers, num_queries, d_model)
-        #       wo/ decoder: None
+        # xxx_prompt_embeds:
 
-        prompt_embeddings_dict = {'src': src_prompt_embeddings, 'tgt': tgt_prompt_embeddings}
-        for domain, prompt_embeddings in prompt_embeddings_dict.items():
-            if prompt_embeddings is not None:
-                if prompt_embeddings.ndim == 2:
+        # xxx_prompt_embeds:
+        #   shallow: (num_prompt_tokens, d_model * 2)
+        #   deep shared: (num_prompt_tokens, d_model * 2)
+        #   deep:
+        #       (num_layers, num_prompt_tokens, d_model * 2)
+        
+        prompt_embeds_dict = {'src': src_decoder_prompt_embeds, 'tgt': tgt_decoder_prompt_embeds}
+        for domain, prompt_embeds in prompt_embeds_dict.items():
+            if prompt_embeds is not None:
+                if prompt_embeds.ndim == 2:
                     if not self.deep_shared:
                         # shallow
-                        # prompt_embeddings: (num_queries, d_model)
-                        prompt_embeddings_dict[domain] = [prompt_embeddings]  # for the 1st layer only
+                        # prompt_embeds: (num_queries, d_model)
+                        prompt_embeds_dict[domain] = [prompt_embeds]  # for the 1st layer only
                     else:
                         # deep shared
-                        # prompt_embeddings: (num_queries, d_model)
+                        # prompt_embeds: (num_queries, d_model)
                         assert self.deep_prompt and self.deep_shared
-                        prompt_embeddings_dict[domain] = [prompt_embeddings for _ in range(self.num_layers)]
-                elif prompt_embeddings.ndim == 3:
+                        prompt_embeds_dict[domain] = [prompt_embeds for _ in range(self.num_layers)]
+                elif prompt_embeds.ndim == 3:
                     # deep
-                    # prompt_embeddings: (num_layers, num_queries, d_model)
+                    # prompt_embeds: (num_layers, num_queries, d_model)
                     assert self.deep_prompt and not self.deep_shared
-                    assert len(prompt_embeddings) == self.num_layers
+                    assert len(prompt_embeds) == self.num_layers
                 else:
-                    raise ValueError('Known shape of prompt embedding:', prompt_embeddings.shape)
-        src_prompt_embeddings = prompt_embeddings_dict['src']
-        tgt_prompt_embeddings = prompt_embeddings_dict['tgt']
-        # prompt_embeddings:
-        #   [num_layers](num_queries, d_model)
-        #   (num_layers, num_queries, d_model)
+                    raise ValueError('Known shape of prompt embedding:', prompt_embeds.shape)
+        src_decoder_prompt_embeds = prompt_embeds_dict['src']
+        tgt_decoder_prompt_embeds = prompt_embeds_dict['tgt']
+        # xxx_prompt_embeds:
+        #   [num_layers](num_queries, d_model * 2)
+        #   (num_layers, num_queries, d_model * 2)
         #   None
 
         output = tgt
@@ -579,22 +694,23 @@ class DeformableTransformerDecoder(nn.Module):
                 reference_points_input = reference_points[:, :, None] * src_valid_ratios[:, None]
             
             src_prompt_embed = None
-            if src_prompt_embeddings is not None:
-                if lid < len(src_prompt_embeddings):
-                    src_prompt_embed = src_prompt_embeddings[lid]   
+            if src_decoder_prompt_embeds is not None:
+                if lid < len(src_decoder_prompt_embeds):
+                    src_prompt_embed = src_decoder_prompt_embeds[lid]   
             tgt_prompt_embed = None
-            if tgt_prompt_embeddings is not None:
-                if lid < len(tgt_prompt_embeddings):
-                    tgt_prompt_embed = tgt_prompt_embeddings[lid]     
+            if tgt_decoder_prompt_embeds is not None:
+                if lid < len(tgt_decoder_prompt_embeds):
+                    tgt_prompt_embed = tgt_decoder_prompt_embeds[lid]     
             # xxx_prompt_embed:
-            #   (num_queries, hidden_dim)
+            #   (num_queries, hidden_dim * 2)
             #   None
-            
+
             # import pdb; pdb.set_trace()
 
             output, instance_query = layer(
                 output, instance_query, query_pos, reference_points_input, src, src_spatial_shapes, src_level_start_index, src_padding_mask,
-                src_prompt_embed, tgt_prompt_embed
+                src_prompt_embed, tgt_prompt_embed,
+                data_domain_type, prompt_domain_type
             )
 
             # hack implementation for iterative bounding box refinement
@@ -653,6 +769,6 @@ def build_deforamble_transformer(cfg):
         two_stage_num_proposals=cfg.MODEL.NUM_QUERIES,
         space_align=cfg.MODEL.SPACE_ALIGN,
         channel_align=cfg.MODEL.CHANNEL_ALIGN,
-        instance_align=cfg.MODEL.INSTANCE_ALIGN,
-        deep_prompt=cfg.MODEL.VISUAL_PROMPT.DEEP,
-        deep_shared=cfg.MODEL.VISUAL_PROMPT.DEEP_SHARED)
+        instance_align=cfg.MODEL.INSTANCE_ALIGN)
+
+

@@ -601,52 +601,104 @@ def get_reference_points(spatial_shapes, valid_ratios, device):
         return reference_points
 
 
-def modify_space_shapes_for_prompts(space_shapes, prompt_embed):
+def add_prompt_embed_to_src(src, spatial_shapes, src_prompt_embed=None, tgt_prompt_embed=None):
+    # src: (N, H_0W_0+...H_3W_3, C)
     # spatial_shapes: (#lvl, 2), the feature shape in each level
-    # prompt_embeddings: (num_prompts, hidden_dim)
-    
-    num_prompts = prompt_embeddings.shape[0]
-    prompt_shape = torch.tensor([[num_prompts, 1]]).float()
-    spatial_shapes = torch.cat([space_shapes, prompt_shape], dim=0)
+    # xxx_prompt_embed:
+    #   [num_feature_levels](max_h, max_w, d_model)
+    #   None
 
-    return spatial_shapes
+    assert src_prompt_embed is not None or tgt_prompt_embed is not None
+
+    if src_prompt_embed is not None:
+        assert len(spatial_shapes) == len(src_prompt_embed)
+
+        spatial_dim = 0
+        src_prompt_embeds = []
+        for feat_lvl_prompt_embed, spatial_shape in zip(src_prompt_embed, spatial_shapes):
+            # feat_lvl_prompt_embed: (h, w, d_model)
+            h, w = spatial_shape
+            spatial_dim += h * w
+            feat_lvl_prompt_embed = feat_lvl_prompt_embed[:h, :w, :]
+            src_prompt_embeds.append(feat_lvl_prompt_embed.flatten(start_dim=0, end_dim=1))
+        src_prompt_embed = torch.cat(src_prompt_embeds, dim=0)  # (H_0W_0+...H_3W_3, C)
+        assert src_prompt_embed.ndim == 2
+        assert src_prompt_embed.shape[0] == spatial_dim.item(), (src_prompt_embed.shape, spatial_dim.item(), spatial_shapes)
+
+    if tgt_prompt_embed is not None:
+        assert len(spatial_shapes) == len(tgt_prompt_embed)
+
+        spatial_dim = 0
+        tgt_prompt_embeds = []
+        for feat_lvl_prompt_embed, spatial_shape in zip(tgt_prompt_embed, spatial_shapes):
+            # feat_lvl_prompt_embed: (h, w, d_model)
+            h, w = spatial_shape
+            spatial_dim += h * w
+            feat_lvl_prompt_embed = feat_lvl_prompt_embed[:h, :w, :]
+            tgt_prompt_embeds.append(feat_lvl_prompt_embed.flatten(start_dim=0, end_dim=1))
+        tgt_prompt_embed = torch.cat(tgt_prompt_embeds, dim=0)  # (H_0W_0+...H_3W_3, C)
+        assert tgt_prompt_embed.ndim == 2
+        assert tgt_prompt_embed.shape[0] == spatial_dim.item(), (tgt_prompt_embed.shape, spatial_dim.item(), spatial_shapes)
+
+    N = len(src)
+
+    prompt_embed = None
+    if src_prompt_embed is not None and tgt_prompt_embed is None:
+        prompt_embed = src_prompt_embed.unsqueeze(0)  # (1, H_0W_0+...H_3W_3, C)
+    elif src_prompt_embed is None and tgt_prompt_embed is not None:
+        prompt_embed = tgt_prompt_embed.unsqueeze(0)  # (1, H_0W_0+...H_3W_3, C)
+    else:
+        assert N % 2 == 0
+        num_src = num_tgt = N // 2
+        src_tgt_prompt_embeds = [src_prompt_embed] * num_src + [tgt_prompt_embed] * num_tgt
+        prompt_embed = torch.stack(src_tgt_prompt_embeds, dim=0)  # (N, H_0W_0+...H_3W_3, C)
+
+    return src + prompt_embed
 
 
-def modify_level_start_index_for_prompts(level_start_index, prompt_start_index):
-    # level_start_index: tensor([0, H_0W_0=14028, H_0W_0+H_1W_1=17556, H_0W_0+H_1W_1+H_2W_2=18438])
-    # prompt_start_index: tensor()
-    level_start_index = torch.cat([level_start_index, prompt_start_index.unsqueeze(dim=0)])
-
-    return level_start_index
-
-
-def modify_valid_ratios_for_prompts(valid_ratios):
-    # valid_ratios: (bz, #lvl, 2=(w, h))
-    N = valid_ratios.shape[0]
-
-    valid_ratio = torch.ones((N, 1, 2)).float()
-    new_valid_ratios = torch.cat([valid_ratios, valid_ratio], dim=1)
-
-    assert new_valid_ratios.shape[0] == N
-    assert new_valid_ratios.shape[1] == valid_ratios.shape[1] + 1
-    assert new_valid_ratios.shape[2] == 2
-
-    return new_valid_ratios
-
-
-def add_1_prompt_embed_to_src(src, level_start_index, prompt_embed):
+def add_1_prompt_embed_to_src(src, level_start_index, src_prompt_embed=None, tgt_prompt_embed=None):
     # src: (N, H_0W_0+...H_3W_3, C)
     # level_start_index: tensor([0, H_0W_0=14028, H_0W_0+H_1W_1=17556, H_0W_0+H_1W_1+H_2W_2=18438])
-    # prompt_embed: (num_feature_levels, C)
+    # xxx_prompt_embed: (num_feature_levels, C) or None
 
-    assert prompt_embed is not None
-    assert prompt_embed.ndim == 2, 'only support add-1'
-    assert len(level_start_index) == len(prompt_embed)
-    assert src.shape[-1] == prompt_embed.shape[-1]
+    assert src_prompt_embed is not None or tgt_prompt_embed is not None
+
+    if src_prompt_embed is not None:
+        assert src_prompt_embed.ndim == 2, 'only support add-1'
+        assert len(level_start_index) == len(src_prompt_embed)
+        assert src.shape[-1] == src_prompt_embed.shape[-1]
+    if tgt_prompt_embed is not None:
+        assert tgt_prompt_embed.ndim == 2, 'only support add-1'
+        assert len(level_start_index) == len(tgt_prompt_embed)
+        assert src.shape[-1] == tgt_prompt_embed.shape[-1]
+
+    N = len(src)
+
+    if src_prompt_embed is not None and tgt_prompt_embed is None:
+        prompt_embed = src_prompt_embed  # (num_feature_levels, C)
+    elif src_prompt_embed is None and tgt_prompt_embed is not None:
+        prompt_embed = tgt_prompt_embed  # (num_feature_levels, C)
+    else:
+        assert N % 2 == 0
+        num_src = num_tgt = N // 2
+        src_tgt_prompt_embeds = [src_prompt_embed] * num_src + [tgt_prompt_embed] * num_tgt
+        prompt_embed = torch.stack(src_tgt_prompt_embeds, dim=1)  # (num_feature_levels, N, C)
+        assert prompt_embed.shape[1] == N
+    assert prompt_embed.shape[0] == len(level_start_index)
+    assert prompt_embed.shape[-1] == src.shape[-1]
+    # prompt_embed:
+    #   (num_feature_levels, C)
+    #   (num_feature_levels, N, C)
 
     srcs = []
     for lvl, start_idx in enumerate(level_start_index):
-        lvl_prompt_embed = prompt_embed[lvl].view(1, 1, -1)  # (1, 1, C)
+        lvl_prompt_embed = prompt_embed[lvl]  # (C,) or (N, C)
+        if lvl_prompt_embed.ndim == 1:
+            lvl_prompt_embed = lvl_prompt_embed.view(1, 1, -1)  # (1, 1, C)
+        elif lvl_prompt_embed.ndim == 2:
+            lvl_prompt_embed = lvl_prompt_embed.unsqueeze(1)  # (N, 1, C)
+        else:
+            raise ValueError(f'The num dim of `lvl_prompt_embed` is wrong: {lvl_prompt_embed.ndim}')
 
         if lvl < len(level_start_index) - 1:
             end_idx = level_start_index[lvl + 1]
@@ -661,48 +713,91 @@ def add_1_prompt_embed_to_src(src, level_start_index, prompt_embed):
     return srcs
 
 
-def add_1_prompt_embed_to_tgt(tgt, prompt_embed):
+def add_1_prompt_embed_to_tgt(tgt, src_prompt_embed=None, tgt_prompt_embed=None):
     # tgt: (N, #query, d_model), object queries
-    # prompt_embed: (#query, C)
-    prompt_embed = prompt_embed.unsqueeze(0)  # (1, #query, C)
+    # xxx_prompt_embed: (#query, C) or None
+
+    assert src_prompt_embed is not None or tgt_prompt_embed is not None
+    if src_prompt_embed is not None:
+        assert tgt.shape[1] == src_prompt_embed.shape[0]
+    if tgt_prompt_embed is not None:
+        assert tgt.shape[1] == tgt_prompt_embed.shape[0]
+
+    N = len(tgt)
+
+    if src_prompt_embed is not None and tgt_prompt_embed is None:
+        prompt_embed = src_prompt_embed.unsqueeze(0)  # (1, #query, C)
+    elif src_prompt_embed is None and tgt_prompt_embed is not None:
+        prompt_embed = tgt_prompt_embed.unsqueeze(0)  # (1, #query, C)
+    else:
+        assert N % 2 == 0
+        num_src = num_tgt = N // 2
+        src_tgt_prompt_embeds = [src_prompt_embed] * num_src + [tgt_prompt_embed] * num_tgt
+        prompt_embed = torch.stack(src_tgt_prompt_embeds, dim=0)  # (N, #query, C)
+        assert prompt_embed.shape[0] == N, prompt_embed.shape
+    assert prompt_embed.shape[-2] == tgt.shape[-2]
+    assert prompt_embed.shape[-1] == tgt.shape[-1]
+
     return tgt + prompt_embed
-            
+    
 
-def prepend_prompt_embed_to_src(src, prompt_embed):
-    # src: (N, H_0W_0+...H_3W_3, C)
-    # prompt_embed: (num_prompts, C)
-    N = src.shape[0]
-    prompt_embed = prompt_embed.unsqueeze(0).expand(N, -1, -1)  # (N, num_prompts, C)
-    new_src = torch.cat([src, prompt_embed], dim=1)  # (N, H_0W_0+...H_3W_3+num_prompts, C)
+def prepend_prompt_to_tgt(tgt, src_prompt_embed=None, tgt_prompt_embed=None):
+    # tgt: (N, #query, d_model), object queries
+    # xxx_prompt_embed:
+    #   (num_prompt_tokens, hidden_dim)
+    #   None
+    # xxx_prompt_pos:
+    #   (num_prompt_tokens, hidden_dim)
+    #   None
 
-    assert new_src.shape[0] == N
-    assert new_src.shape[1] == src.shape[1] + prompt_embed.shape[0]
-    assert new_src.shape[2] == src.shape[2]
+    assert src_prompt_embed is not None or tgt_prompt_embed is not None
 
-    return new_src
+    N, num_queries, C = tgt.shape
+
+    prompt_embed = None
+    num_prompt_tokens = 0
+    if src_prompt_embed is not None and tgt_prompt_embed is None:
+        num_prompt_tokens = src_prompt_embed.shape[0]
+        prompt_embed = src_prompt_embed.unsqueeze(0).expand(N, -1, -1)  # (N, num_prompt_tokens, hidden_dim)
+        # import pdb; pdb.set_trace()  # checked!
+    
+    elif src_prompt_embed is None and tgt_prompt_embed is not None:
+        num_prompt_tokens = tgt_prompt_embed.shape[0]
+        prompt_embed = tgt_prompt_embed.unsqueeze(0).expand(N, -1, -1)  # (N, num_prompt_tokens, hidden_dim)
+        # import pdb; pdb.set_trace()  # checked!
+
+    elif src_prompt_embed is not None and tgt_prompt_embed is not None:
+        assert N % 2 == 0
+        assert src_prompt_embed.shape[0] == tgt_prompt_embed.shape[0]
+
+        num_prompt_tokens = src_prompt_embed.shape[0]
+        num_src = num_tgt = N // 2
+        src_tgt_prompt_embed = [src_prompt_embed] * num_src + [tgt_prompt_embed] * num_tgt
+        prompt_embed = torch.stack(src_tgt_prompt_embed, dim=0)  # (N, num_prompt_tokens, hidden_dim)
+        import pdb; pdb.set_trace()
+
+    assert prompt_embed.ndim == 3
+    assert prompt_embed.shape[0] == N
+    assert prompt_embed.shape[1] == num_prompt_tokens
+    assert prompt_embed.shape[2] == C
+
+    tgt = torch.cat([tgt, prompt_embed], dim=1)
+    assert tgt.shape[0] == N
+    assert tgt.shape[1] == num_queries + num_prompt_tokens
+    assert tgt.shape[2] == C
+
+    return tgt
 
 
-def remove_prompt_embed_from_src(src, prompt_embed):
-    # src: (N, H_0W_0+...H_3W_3+num_prompts, C)
-    # prompt_embed: (num_prompts, C)
-    num_prompts = prompt_embed.shape[0]
-    idx = src.shape[1] - num_prompts
-    return src[:, :idx, :]
-
-
-def modify_pos_for_prompts(pos, prompt_embed):
-    # pos: (N, H_0W_0+...H_3W_3, C)
-    # prompt_embed: (num_prompts, C)
-    N, _, C = src.shape
-    num_prompts = prompt_embed.shape[0]
-    prompt_pos = torch.zeros(N, num_prompts, C)
-    new_pos = torch.cat([pos, prompt_pos], dim=1)  # (N, H_0W_0+...H_3W_3+num_prompts, C)
-
-    assert new_pos.shape[0] == N
-    assert new_pos.shape[1] == pos.shape[1] + prompt_embed.shape[0]
-    assert new_pos.shape[2] == pos.shape[2]
-
-    return new_pos
+def init_parameter_list(param_list: nn.ParameterList, a: float, b: float):
+    for param in param_list:
+        if isinstance(param, nn.ParameterList):
+            for sub_param in param:
+                assert isinstance(sub_param, nn.Parameter)
+                nn.init.uniform_(sub_param.data, a, b)
+        else:
+            assert isinstance(param, nn.Parameter)
+            nn.init.uniform_(param.data, a, b)
 
 
 class FCDiscriminator(nn.Module):

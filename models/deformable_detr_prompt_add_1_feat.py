@@ -40,7 +40,9 @@ class DeformableDETR(nn.Module):
     def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels,
                  aux_loss=True, with_box_refine=False, two_stage=False,
                  backbone_align=False, space_align=False, channel_align=False, instance_align=False,
-                 prompt_modules=[], prompt_project=False, deep_prompt=False, deep_shared_prompt=False, num_prompt_tokens=None, prompt_dropout_rate=0.0, prompt_init_a=-0.1, prompt_init_b=0.1):
+                 prompt_modules=[], prompt_project=False, deep_prompt=False, deep_shared_prompt=False,
+                 num_prompt_tokens=None, prompt_dropout_rate=0.0, prompt_init_a=-0.1, prompt_init_b=0.1,
+                 prompt_domain_type='same'):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -100,6 +102,7 @@ class DeformableDETR(nn.Module):
         self.prompt_dropout_rate = prompt_dropout_rate
         self.prompt_init_a = prompt_init_a
         self.prompt_init_b = prompt_init_b
+        self.prompt_domain_type = prompt_domain_type
 
         prior_prob = 0.01
         bias_value = -math.log((1 - prior_prob) / prior_prob)
@@ -155,28 +158,32 @@ class DeformableDETR(nn.Module):
             # if prompt is shallow
             # it only needs 1 prompt to input in the 1st layer of the encoder or decoder
             if 'encoder' in self.prompt_modules:
-                self.encoder_prompt_embeddings = nn.Parameter(torch.zeros(num_feature_levels, hidden_dim))
-                nn.init.uniform_(self.encoder_prompt_embeddings.data, self.prompt_init_a, self.prompt_init_b)
+                self.encoder_prompt_embeddings = nn.ParameterDict({
+                    'src': nn.Parameter(torch.zeros(num_feature_levels, hidden_dim))
+                })
             else:
                 self.encoder_prompt_embeddings = None
 
             if 'decoder' in self.prompt_modules:
-                self.decoder_prompt_embeddings = nn.Parameter(torch.zeros(num_queries, hidden_dim))
-                nn.init.uniform_(self.decoder_prompt_embeddings.data, self.prompt_init_a, self.prompt_init_b)
+                self.decoder_prompt_embeddings = nn.ParameterDict({
+                    'src': nn.Parameter(torch.zeros(num_queries, hidden_dim))
+                })
             else:
                 self.decoder_prompt_embeddings = None
 
         elif self.deep_prompt and self.deep_shared_prompt:
             # if prompt is deep shared,
-            # it only needs 1 prompt for each feature levels in encoder or decoder
+            # it only needs 1 prompt for each feature levels in the encoder or decoder
             assert 'encoder' in self.prompt_modules
 
-            self.encoder_prompt_embeddings = nn.Parameter(torch.zeros(num_feature_levels, hidden_dim))
-            nn.init.uniform_(self.encoder_prompt_embeddings.data, self.prompt_init_a, self.prompt_init_b)
+            self.encoder_prompt_embeddings = nn.ParameterDict({
+                    'src': nn.Parameter(torch.zeros(num_feature_levels, hidden_dim))
+            })
 
             if 'decoder' in self.prompt_modules:
-                self.decoder_prompt_embeddings = nn.Parameter(torch.zeros(num_queries, hidden_dim))
-                nn.init.uniform_(self.decoder_prompt_embeddings.data, self.prompt_init_a, self.prompt_init_b)
+                self.decoder_prompt_embeddings = nn.ParameterDict({
+                    'src': nn.Parameter(torch.zeros(num_queries, hidden_dim))
+                })
             else:
                 self.decoder_prompt_embeddings = None
 
@@ -185,18 +192,53 @@ class DeformableDETR(nn.Module):
             # it needs 1 prompt for each feature levels and each layers
             if 'encoder' in self.prompt_modules:
                 num_layers = self.transformer.encoder.num_layers
-                self.encoder_prompt_embeddings = nn.Parameter(torch.zeros(num_layers, num_feature_levels, hidden_dim))
-                nn.init.uniform_(self.encoder_prompt_embeddings.data, self.prompt_init_a, self.prompt_init_b)
+                self.encoder_prompt_embeddings = nn.ParameterDict({
+                    'src': nn.Parameter(torch.zeros(num_layers, num_feature_levels, hidden_dim))
+                })
             else:
                 self.encoder_prompt_embeddings = None
 
             if 'decoder' in self.prompt_modules:
                 num_layers = self.transformer.decoder.num_layers
-                self.decoder_prompt_embeddings = nn.Parameter(torch.zeros(num_layers, num_queries, hidden_dim))
-                nn.init.uniform_(self.decoder_prompt_embeddings.data, self.prompt_init_a, self.prompt_init_b)
+                self.decoder_prompt_embeddings = nn.ParameterDict({
+                    'src': nn.Parameter(torch.zeros(num_layers, num_queries, hidden_dim))
+                })
             else:
                 self.decoder_prompt_embeddings = None
 
+        else:
+            raise ValueError('Wrong setting of prompt')
+
+        if self.encoder_prompt_embeddings is not None:
+            nn.init.uniform_(self.encoder_prompt_embeddings['src'].data, self.prompt_init_a, self.prompt_init_b)
+        if self.decoder_prompt_embeddings is not None:
+            nn.init.uniform_(self.decoder_prompt_embeddings['src'].data, self.prompt_init_a, self.prompt_init_b)
+        
+        if self.prompt_domain_type == 'same':
+            if self.encoder_prompt_embeddings is not None:
+                self.encoder_prompt_embeddings['tgt'] = self.encoder_prompt_embeddings['src']
+            if self.decoder_prompt_embeddings is not None:
+                self.decoder_prompt_embeddings['tgt'] = self.decoder_prompt_embeddings['src']
+        elif self.prompt_domain_type == 'separate':
+            if self.encoder_prompt_embeddings is not None:
+                self.encoder_prompt_embeddings['tgt'] = copy.deepcopy(self.encoder_prompt_embeddings['src'])
+                nn.init.uniform_(self.encoder_prompt_embeddings['tgt'].data, self.prompt_init_a, self.prompt_init_b)
+            if self.decoder_prompt_embeddings is not None:
+                self.decoder_prompt_embeddings['tgt'] = copy.deepcopy(self.decoder_prompt_embeddings['src'])
+                nn.init.uniform_(self.decoder_prompt_embeddings['tgt'].data, self.prompt_init_a, self.prompt_init_b)
+        elif self.prompt_domain_type == 'inverse':
+            pass
+            # if self.encoder_prompt_embeddings is not None:
+            #     self.encoder_prompt_embeddings['tgt'] = -self.encoder_prompt_embeddings['src']
+            # if self.decoder_prompt_embeddings is not None:
+            #     self.decoder_prompt_embeddings['tgt'] = -self.decoder_prompt_embeddings['src']
+        elif self.prompt_domain_type == 'tgt_only':
+            if self.encoder_prompt_embeddings is not None:
+                self.encoder_prompt_embeddings['tgt'] = self.encoder_prompt_embeddings['src']
+                self.encoder_prompt_embeddings['src'] = None
+            if self.decoder_prompt_embeddings is not None:
+                self.decoder_prompt_embeddings['tgt'] = self.decoder_prompt_embeddings['src']
+                self.decoder_prompt_embeddings['src'] = None
         else:
             raise ValueError('Wrong setting of prompt')
             
@@ -248,31 +290,67 @@ class DeformableDETR(nn.Module):
                 masks.append(mask)
                 pos.append(pos_l)
 
-        encoder_prompt_embeddings = None
+        encoder_prompt_embeddings = {'src': None, 'tgt': None}
         if self.encoder_prompt_embeddings is not None:
-            encoder_prompt_embeddings = self.prompt_dropout(self.prompt_proj(self.encoder_prompt_embeddings))
-            # (num_feature_levels, hidden_dim) or (num_layers, num_feature_levels, hidden_dim) or None
+            for domain, prompt_embeddings in self.encoder_prompt_embeddings.items():
+                if prompt_embeddings is not None:
+                    encoder_prompt_embeddings[domain] = self.prompt_dropout(self.prompt_proj(prompt_embeddings))
+                # (num_feature_levels, hidden_dim) or (num_layers, num_feature_levels, hidden_dim) or None
 
-        decoder_prompt_embeddings = None
+            if encoder_prompt_embeddings['src'] is not None and self.prompt_domain_type == 'inverse':
+                encoder_prompt_embeddings['tgt'] = - encoder_prompt_embeddings['src']
+
+        decoder_prompt_embeddings = {'src': None, 'tgt': None}
         if self.decoder_prompt_embeddings is not None:
-            decoder_prompt_embeddings = self.prompt_dropout(self.prompt_proj(self.decoder_prompt_embeddings))
-        # encoder_prompt_embeddings:
+            for domain, prompt_embeddings in self.decoder_prompt_embeddings.items():
+                if prompt_embeddings is not None:
+                    decoder_prompt_embeddings[domain] = self.prompt_dropout(self.prompt_proj(prompt_embeddings))
+
+            if decoder_prompt_embeddings['src'] is not None and self.prompt_domain_type == 'inverse':
+                decoder_prompt_embeddings['tgt'] = - decoder_prompt_embeddings['src']
+
+        if 'data_domain_type' not in kwargs:
+            # default
+            kwargs['data_domain_type'] = 'src+tgt'
+        
+        if kwargs['data_domain_type'] == 'src_only':
+            src_encoder_prompt_embeddings = encoder_prompt_embeddings['src']
+            tgt_encoder_prompt_embeddings = None
+            src_decoder_prompt_embeddings = decoder_prompt_embeddings['src']
+            tgt_decoder_prompt_embeddings = None
+        elif kwargs['data_domain_type'] == 'tgt_only':
+            src_encoder_prompt_embeddings = None
+            tgt_encoder_prompt_embeddings = encoder_prompt_embeddings['tgt'] if encoder_prompt_embeddings else None
+            src_decoder_prompt_embeddings = None
+            tgt_decoder_prompt_embeddings = decoder_prompt_embeddings['tgt'] if decoder_prompt_embeddings else None
+        elif kwargs['data_domain_type'] == 'src+tgt':
+            src_encoder_prompt_embeddings = encoder_prompt_embeddings['src'] if encoder_prompt_embeddings else None
+            tgt_encoder_prompt_embeddings = encoder_prompt_embeddings['tgt'] if encoder_prompt_embeddings else None
+            src_decoder_prompt_embeddings = decoder_prompt_embeddings['src'] if decoder_prompt_embeddings else None
+            tgt_decoder_prompt_embeddings = decoder_prompt_embeddings['tgt'] if decoder_prompt_embeddings else None
+
+        # xxx_encoder_prompt_embeddings:
         #   shallow: (num_feature_levels, hidden_dim)
         #   deep shared: (num_feature_levels, hidden_dim)
         #   deep: (num_layers, num_feature_levels, hidden_dim)
-        # decoder_prompt_embeddings:
+        # xxx_decoder_prompt_embeddings:
         #   shallow: (num_queries, hidden_dim)
         #   deep shared: (num_queries, hidden_dim)
         #   deep:
         #       w/ decoder: (num_layers, num_queries, hidden_dim)
         #       wo/ decoder: None
 
-        # import pdb; pdb.set_trace()  # check `self.encoder_prompt_embeddings` & `self.decoder_prompt_embeddings`
+        # if kwargs['data_domain_type'] == 'src+tgt':
+        #     import pdb; pdb.set_trace()  # check `self.encoder_prompt_embeddings` & `self.decoder_prompt_embeddings`
 
         query_embeds = None
         if not self.two_stage:
             query_embeds = self.query_embed.weight
-        memory, hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output = self.transformer(srcs, masks, pos, query_embeds, encoder_prompt_embeddings, decoder_prompt_embeddings)
+        memory, hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output = self.transformer(
+            srcs, masks, pos, query_embeds,
+            src_encoder_prompt_embeddings, tgt_encoder_prompt_embeddings,
+            src_decoder_prompt_embeddings, tgt_decoder_prompt_embeddings
+        )
 
         outputs_classes = []
         outputs_coords = []
@@ -495,7 +573,7 @@ class SetCriterion(nn.Module):
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
 
         # Retrieve the matching between the outputs of the last layer and the targets
-        targets = targets[:len(outputs_without_aux['pred_logits'])]
+        targets = targets[:len(outputs_without_aux['pred_logits'])]  # get source targets
         indices = self.matcher(outputs_without_aux, targets)
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes
@@ -589,6 +667,8 @@ def build(cfg):
         raise ImportError('Wrong import! This module is only for visual prompt')
     if cfg.MODEL.VISUAL_PROMPT.LOCATION != 'add-1-feat':
         raise ImportError('Wrong import! This module is only for that visual prompts are added-1-feat')
+    if cfg.MODEL.VISUAL_PROMPT.DOMAIN_TYPE not in ['same', 'separate', 'inverse', 'tgt_only']:
+        raise ValueError(f'Wrong key value! `DOMAIN_TYPE` should be one of "same", "separate", or "inverse", but got {cfg.MODEL.VISUAL_PROMPT.DOMAIN_TYPE}')
 
     device = torch.device(cfg.DEVICE)
 
@@ -615,7 +695,8 @@ def build(cfg):
         num_prompt_tokens=cfg.MODEL.VISUAL_PROMPT.NUM_TOKENS,
         prompt_dropout_rate=cfg.MODEL.VISUAL_PROMPT.DROPOUT_RATE,
         prompt_init_a=cfg.MODEL.VISUAL_PROMPT.INIT_A,
-        prompt_init_b=cfg.MODEL.VISUAL_PROMPT.INIT_B
+        prompt_init_b=cfg.MODEL.VISUAL_PROMPT.INIT_B,
+        prompt_domain_type=cfg.MODEL.VISUAL_PROMPT.DOMAIN_TYPE
     )
     if cfg.MODEL.MASKS:
         model = DETRsegm(model, freeze_detr=(cfg.MODEL.FROZEN_WEIGHTS is not None))
