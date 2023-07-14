@@ -115,12 +115,21 @@ def main(cfg):
                                        collate_fn=DAOD.collate_fn, num_workers=cfg.NUM_WORKERS,
                                        pin_memory=True)
     elif cfg.DATASET.DA_MODE == 'cross_domain':
-        assert cfg.TRAIN.BATCH_SIZE % 3 == 0, f'cfg.TRAIN.BATCH_SIZE {cfg.TRAIN.BATCH_SIZE} should be a multiple of 3'
+        # FIXME: test to use src to compute supervised loss
+        # assert cfg.TRAIN.BATCH_SIZE % 3 == 0, f'cfg.TRAIN.BATCH_SIZE {cfg.TRAIN.BATCH_SIZE} should be a multiple of 3'
+        # batch_sampler_train = torch.utils.data.BatchSampler(
+        #     sampler_train, cfg.TRAIN.BATCH_SIZE//3, drop_last=True)
+            
+        # data_loader_train = DataLoader(dataset_train, batch_sampler=batch_sampler_train,
+        #                                collate_fn=DAOD.collate_fn_cross_domain, num_workers=cfg.NUM_WORKERS,
+        #                                pin_memory=True)
+
+        assert cfg.TRAIN.BATCH_SIZE % 2 == 0, f'cfg.TRAIN.BATCH_SIZE {cfg.TRAIN.BATCH_SIZE} should be a multiple of 3'
         batch_sampler_train = torch.utils.data.BatchSampler(
-            sampler_train, cfg.TRAIN.BATCH_SIZE//3, drop_last=True)
+            sampler_train, cfg.TRAIN.BATCH_SIZE//2, drop_last=True)
             
         data_loader_train = DataLoader(dataset_train, batch_sampler=batch_sampler_train,
-                                       collate_fn=DAOD.collate_fn_cross_domain, num_workers=cfg.NUM_WORKERS,
+                                       collate_fn=DAOD.collate_fn, num_workers=cfg.NUM_WORKERS,
                                        pin_memory=True)
 
     else:

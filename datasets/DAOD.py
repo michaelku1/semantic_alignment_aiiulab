@@ -248,12 +248,24 @@ def build(image_set, cfg):
             assert source_domain == 'cityscapes', source_domain
             assert target_domain == 'foggy_cityscapes', target_domain
 
-            return CrossDomainDADataset(
-                source_img_folder=paths[source_domain]['train_img'],
+            # FIXME: test to use src to compute supervised loss
+            # return CrossDomainDADataset(
+            #     source_img_folder=paths[source_domain]['train_img'],
+            #     source_ann_file=paths[source_domain]['train_anno'],
+            #     target_img_folder=paths[target_domain]['train_img'],
+            #     target_ann_file=paths[target_domain]['train_anno'],
+            #     target_like_source_img_folder=paths['city_instruction_cityscapes']['train_img'],
+            #     transforms=make_coco_transforms(image_set),
+            #     return_masks=cfg.MODEL.MASKS,
+            #     cache_mode=cfg.CACHE_MODE,
+            #     local_rank=get_local_rank(),
+            #     local_size=get_local_size()
+            # )
+            return DADataset(
+                source_img_folder=paths['city_instruction_cityscapes']['train_img'],
                 source_ann_file=paths[source_domain]['train_anno'],
                 target_img_folder=paths[target_domain]['train_img'],
                 target_ann_file=paths[target_domain]['train_anno'],
-                target_like_source_img_folder=paths['city_instruction_cityscapes']['train_img'],
                 transforms=make_coco_transforms(image_set),
                 return_masks=cfg.MODEL.MASKS,
                 cache_mode=cfg.CACHE_MODE,

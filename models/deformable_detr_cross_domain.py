@@ -209,7 +209,8 @@ class DeformableDETR(nn.Module):
 
         if self.training and self.uda:
             B = outputs_class.shape[1]
-            end_idx = 2 * B // 3
+            # end_idx = 2 * B // 3
+            end_idx = B // 2  # FIXME: test to use src to compute supervised loss
             outputs_class = outputs_class[:, :end_idx]
             outputs_coord = outputs_coord[:, :end_idx]
             if self.two_stage:
@@ -361,11 +362,14 @@ class SetCriterion(nn.Module):
 
     def loss_da(self, outputs, use_focal=False):
         B = outputs.shape[0]
-        assert B % 3 == 0
+        # assert B % 3 == 0
+        assert B % 2 == 0  # FIXME: test to use src to compute supervised loss
 
         targets = torch.empty_like(outputs)
-        targets[:B//3] = 0
-        targets[B//3:] = 1
+        # targets[:B//3] = 0
+        # targets[B//3:] = 1
+        targets[:B//2] = 0  # FIXME: test to use src to compute supervised loss
+        targets[B//2:] = 1  # FIXME: test to use src to compute supervised loss
 
         loss = F.binary_cross_entropy_with_logits(outputs, targets, reduction='none')
 
