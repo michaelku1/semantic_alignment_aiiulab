@@ -33,6 +33,12 @@ def get_paths(root):
             'val_img': root / 'cityscapes/leftImg8bit_foggy/val',
             'val_anno': root / 'cityscapes/annotations/foggy_cityscapes_val.json',
         },
+        'city_instruction_cityscapes': {
+            'train_img': root / 'adaptive_teacher/city_instruction_cityfoggy/leftImg8bit/train',
+            'train_anno': root / 'adaptive_teacher/city_instruction_cityfoggy/annotations/cityscapes_train.json',
+            'val_img': root / 'adaptive_teacher/city_instruction_cityfoggy/leftImg8bit/val',
+            'val_anno': root / 'adaptive_teacher/city_instruction_cityfoggy/annotations/cityscapes_val.json',
+        },
         'sim10k': {
             'train_img': root / 'sim10k/VOC2012/JPEGImages',
             'train_anno': root / 'sim10k/annotations/sim10k_caronly.json',
@@ -45,126 +51,7 @@ def get_paths(root):
         }
     }
 
-# TODO scace class subset
-# def get_paths(root):
-#     root = Path(root)
-#     return {
-#         'cityscapes': {
-#             'train_img': root / 'cityscapes/leftImg8bit/train',
-#             'train_anno': root / 'cityscapes/annotations/train_cityscapes_subset_train_truck_bus.json',
-#             'val_img': root / 'cityscapes/leftImg8bit/val',
-#             'val_anno': root / 'cityscapes/annotations/cityscapes_val.json',
-#         },
-#         'foggy_cityscapes': {
-#             'train_img': root / 'cityscapes/leftImg8bit_foggy/train',
-#             'train_anno': root / 'cityscapes/annotations/foggy_cityscapes_subset_train_truck_bus.json',
-#             'val_img': root / 'cityscapes/leftImg8bit_foggy/val',
-#             'val_anno': root / 'cityscapes/annotations/val_foggy_cityscapes_subset_train_truck_bus.json',
-#         },
 
-#     }
-
-# TODO car_rider_bus subset
-# def get_paths(root):
-#     root = Path(root)
-#     return {
-#         'cityscapes': {
-#             'train_img': root / 'cityscapes/leftImg8bit/train',
-#             'train_anno': root / 'cityscapes/annotations/train_subset_car_rider_bus.json',
-#             'val_img': root / 'cityscapes/leftImg8bit/val',
-#             'val_anno': root / 'cityscapes/annotations/cityscapes_val.json',
-#         },
-#         'foggy_cityscapes': {
-#             'train_img': root / 'cityscapes/leftImg8bit_foggy/train',
-#             'train_anno': root / 'cityscapes/annotations/train_foggy_subset_car_rider_bus.json',
-#             'val_img': root / 'cityscapes/leftImg8bit_foggy/val',
-#             'val_anno': root / 'cityscapes/annotations/val_foggy_subset_car_rider_bus.json',
-#         },
-
-#     }
-
-# TODO car subset
-# def get_paths(root):
-#     root = Path(root)
-#     return {3
-#         'cityscapes': {
-#             'train_img': root / 'cityscapes/leftImg8bit/train',
-#             'train_anno': root / 'cityscapes/annotations/train_subset_car.json',
-#             'val_img': root / 'cityscapes/leftImg8bit/val',
-#             'val_anno': root / 'cityscapes/annotations/cityscapes_val.json',
-#         },
-
-#         'foggy_cityscapes': {
-#             'train_img': root / 'cityscapes/leftImg8bit_foggy/train',
-#             'train_anno': root / 'cityscapes/annotations/train_foggy_subset_car.json',
-#             'val_img': root / 'cityscapes/leftImg8bit_foggy/val',
-#             'val_anno': root / 'cityscapes/annotations/val_foggy_subset_car.json',
-#         },
-
-#     }
-
-# TODO car_train_bus subset
-# def get_paths(root):
-#     root = Path(root)
-#     return {
-#         'cityscapes': {
-#             'train_img': root / 'cityscapes/leftImg8bit/train',
-#             'train_anno': root / 'cityscapes/annotations/train_cityscapes_subset_car_train_bus.json',
-#             'val_img': root / 'cityscapes/leftImg8bit/val',
-#             'val_anno': root / 'cityscapes/annotations/cityscapes_val.json',
-#         },
-
-#         'foggy_cityscapes': {
-#             'train_img': root / 'cityscapes/leftImg8bit_foggy/train',
-#             'train_anno': root / 'cityscapes/annotations/train_foggy_subset_car_train_bus.json',
-#             'val_img': root / 'cityscapes/leftImg8bit_foggy/val',
-#             'val_anno': root / 'cityscapes/annotations/val_foggy_subset_car_train_bus.json',
-#         },
-
-#     }
-
-
-# # TODO debug only
-# def get_paths(root):
-#     root = Path(root)
-#     return {
-#         'cityscapes': {
-#             'train_img': root / 'cityscapes/leftImg8bit/train',
-#             'train_anno': root / 'cityscapes/annotations/train_subset_train.json',
-#             'val_img': root / 'cityscapes/leftImg8bit/val',
-#             'val_anno': root / 'cityscapes/annotations/cityscapes_val.json',
-#         },
-
-#         'foggy_cityscapes': {
-#             'train_img': root / 'cityscapes/leftImg8bit_foggy/train',
-#             'train_anno': root / 'cityscapes/annotations/train_foggy_subset_train.json',
-#             'val_img': root / 'cityscapes/leftImg8bit_foggy/val',
-#             'val_anno': root / 'cityscapes/annotations/val_foggy_subset_train.json',
-#         },
-
-#     }
-
-# # TODO single image debug, note that foggy val is the same as foggy train
-# def get_paths(root):
-#     root = Path(root)
-#     return {
-#         'cityscapes': {
-#             'train_img': root / 'cityscapes/leftImg8bit/train',
-#             'train_anno': root / 'cityscapes/annotations/single_image_train.json',
-#             'val_img': root / 'cityscapes/leftImg8bit/val',
-#             'val_anno': root / 'cityscapes/annotations/cityscapes_val.json',
-#         },
-
-#         'foggy_cityscapes': {
-#             'train_img': root / 'cityscapes/leftImg8bit_foggy/train',
-#             'train_anno': root / 'cityscapes/annotations/single_image_train_foggy.json',
-#             'val_img': root / 'cityscapes/leftImg8bit_foggy/val',
-#             'val_anno': root / 'cityscapes/annotations/single_image_val_foggy.json',
-#         },
-
-#     }
-
-# TODO change getitem to get target annotations
 class DADataset(Dataset):
     def __init__(self, source_img_folder, source_ann_file, target_img_folder, target_ann_file,
                  transforms, return_masks, cache_mode=False, local_rank=0, local_size=1):
@@ -222,6 +109,72 @@ def collate_fn(batch):
     return samples, targets
 
 
+class CrossDomainDADataset(Dataset):
+    def __init__(
+        self,
+        source_img_folder, source_ann_file,
+        target_img_folder, target_ann_file,
+        target_like_source_img_folder,
+        transforms, return_masks, cache_mode=False, local_rank=0, local_size=1
+    ):
+
+        # for source data
+        self.source = CocoDetection(
+            img_folder=source_img_folder,
+            ann_file=source_ann_file,
+            transforms=transforms,
+            return_masks=return_masks,
+            cache_mode=cache_mode,
+            local_rank=local_rank,
+            local_size=local_size
+        )
+
+        # for target data
+        self.target = CocoDetection(
+            img_folder=target_img_folder,
+            ann_file=target_ann_file,
+            transforms=transforms,
+            return_masks=return_masks,
+            cache_mode=cache_mode,
+            local_rank=local_rank,
+            local_size=local_size
+        )
+
+        # for target_like data
+        self.target_like_source = CocoDetection(
+            img_folder=target_like_source_img_folder,
+            ann_file=source_ann_file,
+            transforms=transforms,
+            return_masks=return_masks,
+            cache_mode=cache_mode,
+            local_rank=local_rank,
+            local_size=local_size
+        )
+
+        self.data_domain_type = 'src+tgt_like+tgt'
+
+        assert len(self.source) == len(self.target), (self.source, self.target)
+        assert len(self.target) == len(self.target_like_source), (self.target, self.target_like_source)
+
+    def __len__(self):
+        return len(self.source)
+
+    def __getitem__(self, idx):
+        source_img, source_target = self.source[idx % len(self.source)]
+        target_img, target_target = self.target[idx % len(self.target)]
+        target_like_source_img, _ = self.target_like_source[idx % len(self.target_like_source)]
+
+        return source_img, target_img, target_like_source_img, source_target, target_target
+
+
+def collate_fn_cross_domain(batch):
+    source_imgs, target_imgs, target_like_source_imgs, source_targets, target_targets = list(zip(*batch))
+    samples = nested_tensor_from_tensor_list(source_imgs + target_like_source_imgs + target_imgs)
+    targets = source_targets + source_targets + target_targets
+
+    return samples, targets
+
+
 # wrapper
 def build(image_set, cfg):
     paths = get_paths(cfg.DATASET.COCO_PATH)
@@ -241,6 +194,17 @@ def build(image_set, cfg):
         return CocoDetection(
             img_folder=paths[source_domain]['val_img'],
             ann_file=paths[source_domain]['val_anno'],
+            transforms=make_coco_transforms(image_set),
+            return_masks=cfg.MODEL.MASKS,
+            cache_mode=cfg.CACHE_MODE,
+            local_rank=get_local_rank(),
+            local_size=get_local_size()
+        )
+    elif image_set == 'val_target_like_source':
+        cross_domain = 'city_instruction_cityscapes'
+        return CocoDetection(
+            img_folder=paths[cross_domain]['val_img'],
+            ann_file=paths[cross_domain]['val_anno'],
             transforms=make_coco_transforms(image_set),
             return_masks=cfg.MODEL.MASKS,
             cache_mode=cfg.CACHE_MODE,
@@ -274,6 +238,22 @@ def build(image_set, cfg):
                 source_ann_file=paths[source_domain]['train_anno'],
                 target_img_folder=paths[target_domain]['train_img'],
                 target_ann_file=paths[target_domain]['train_anno'],
+                transforms=make_coco_transforms(image_set),
+                return_masks=cfg.MODEL.MASKS,
+                cache_mode=cfg.CACHE_MODE,
+                local_rank=get_local_rank(),
+                local_size=get_local_size()
+            )
+        elif cfg.DATASET.DA_MODE == 'cross_domain':
+            assert source_domain == 'cityscapes', source_domain
+            assert target_domain == 'foggy_cityscapes', target_domain
+
+            return CrossDomainDADataset(
+                source_img_folder=paths[source_domain]['train_img'],
+                source_ann_file=paths[source_domain]['train_anno'],
+                target_img_folder=paths[target_domain]['train_img'],
+                target_ann_file=paths[target_domain]['train_anno'],
+                target_like_source_img_folder=paths['city_instruction_cityscapes']['train_img'],
                 transforms=make_coco_transforms(image_set),
                 return_masks=cfg.MODEL.MASKS,
                 cache_mode=cfg.CACHE_MODE,
