@@ -14,6 +14,7 @@ from .deformable_detr_prompt_add import build as build_vpt_add
 from .deformable_detr_prompt_prepend import build as build_vpt_prepend
 from .deformable_detr_prompt_add_prepend import build as build_vpt_add_prepend
 from .deformable_detr_prompt_add_1_feat import build as build_vpt_add_1_feat
+from .deformable_detr_cross_domain import build as build_cross_domain
 
 def build_model(cfg):
     if cfg.MODEL.VISUAL_PROMPT.SWITCH:
@@ -31,6 +32,10 @@ def build_model(cfg):
             return build_vpt_add_1_feat(cfg)
         else:
             raise ValueError(f'Wrong key value! `MODEL.VISUAL_PROMPT.LOCATION` should be one of `prepend`, or `add-1-feat`, but got {cfg.MODEL.VISUAL_PROMPT.LOCATION}')
+    
+    elif cfg.DATASET.DA_MODE == 'cross_domain':
+        print('`build_model` comes from `deformable_detr_cross_domain.py`')
+        return build_cross_domain(cfg)
     else:
         print('`build_model` comes from `deformable_detr.py`')
         return build(cfg)
