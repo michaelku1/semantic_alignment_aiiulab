@@ -39,6 +39,18 @@ def get_paths(root):
             'val_img': root / 'adaptive_teacher/city_instruction_cityfoggy/leftImg8bit/val',
             'val_anno': root / 'adaptive_teacher/city_instruction_cityfoggy/annotations/cityscapes_val.json',
         },
+        'cyclegan_paired': {
+            'train_img': root / 'city_cycle_cityfoggy/JPEGImages_paired',
+            'train_anno': root / 'cityscapes/annotations/cityscapes_train.json',
+            'val_img': root / 'city_cycle_cityfoggy/JPEGImages_paired',
+            'val_anno': root / 'cityscapes/annotations/cityscapes_val.json',
+        },
+        'cyclegan_unpaired': {
+            'train_img': root / 'city_cycle_cityfoggy/JPEGImages_unpaired',
+            'train_anno': root / 'cityscapes/annotations/cityscapes_train.json',
+            'val_img': root / 'city_cycle_cityfoggy/JPEGImages_unpaired',
+            'val_anno': root / 'cityscapes/annotations/cityscapes_val.json',
+        },
         'sim10k': {
             'train_img': root / 'sim10k/VOC2012/JPEGImages',
             'train_anno': root / 'sim10k/annotations/sim10k_caronly.json',
@@ -151,7 +163,7 @@ class CrossDomainDADataset(Dataset):
             local_size=local_size
         )
 
-        self.data_domain_type = 'src+tgt_like+tgt'
+        self.data_domain_type = 'src+tgt-like+tgt'
 
         assert len(self.source) == len(self.target), (self.source, self.target)
         assert len(self.target) == len(self.target_like_source), (self.target, self.target_like_source)
@@ -165,6 +177,21 @@ class CrossDomainDADataset(Dataset):
         target_like_source_img, _ = self.target_like_source[idx % len(self.target_like_source)]
 
         return source_img, target_img, target_like_source_img, source_target, target_target
+
+
+def modify_img_paths(dataset):
+    if isinstance(dataset, CrossDomainDADataset):
+        coco = dataset.target_like_source.coco
+    elif isinstance(dataset, CocoDetection):
+        coco = dataset.coco
+    else:
+        raise ValueError('Unknown type of dataset:', type(dataset))
+
+    for i, img_info in enumerate(coco.dataset['images']):
+        img_name = Path(img_info['file_name']).name
+        coco.dataset['images'][i]['file_name'] = str(img_name)
+    
+    coco.createIndex()
 
 
 def collate_fn_cross_domain(batch):
@@ -190,6 +217,7 @@ def build(image_set, cfg):
             local_rank=get_local_rank(),
             local_size=get_local_size()
         )
+
     elif image_set == 'val_source':
         return CocoDetection(
             img_folder=paths[source_domain]['val_img'],
@@ -200,17 +228,49 @@ def build(image_set, cfg):
             local_rank=get_local_rank(),
             local_size=get_local_size()
         )
+
     elif image_set == 'val_target_like_source':
-        cross_domain = 'city_instruction_cityscapes'
-        return CocoDetection(
-            img_folder=paths[cross_domain]['val_img'],
-            ann_file=paths[cross_domain]['val_anno'],
-            transforms=make_coco_transforms(image_set),
-            return_masks=cfg.MODEL.MASKS,
-            cache_mode=cfg.CACHE_MODE,
-            local_rank=get_local_rank(),
-            local_size=get_local_size()
-        )
+        if cfg.DATASET.DA_MODE == 'cross_domain':
+            cross_domain = 'city_instruction_cityscapes'
+            return CocoDetection(
+                img_folder=paths[cross_domain]['val_img'],
+                ann_file=paths[cross_domain]['val_anno'],
+                transforms=make_coco_transforms(image_set),
+                return_masks=cfg.MODEL.MASKS,
+                cache_mode=cfg.CACHE_MODE,
+                local_rank=get_local_rank(),
+                local_size=get_local_size()
+            )
+        elif cfg.DATASET.DA_MODE == 'cross_domain_cyclegan_paired':
+            cross_domain = 'cyclegan_paired'
+            dataset = CocoDetection(
+                img_folder=paths[cross_domain]['val_img'],
+                ann_file=paths[cross_domain]['val_anno'],
+                transforms=make_coco_transforms(image_set),
+                return_masks=cfg.MODEL.MASKS,
+                cache_mode=cfg.CACHE_MODE,
+                local_rank=get_local_rank(),
+                local_size=get_local_size()
+            )
+            modify_img_paths(dataset)
+            return dataset
+        
+        elif cfg.DATASET.DA_MODE == 'cross_domain_cyclegan_unpaired':
+            cross_domain = 'cyclegan_unpaired'
+            dataset = CocoDetection(
+                img_folder=paths[cross_domain]['val_img'],
+                ann_file=paths[cross_domain]['val_anno'],
+                transforms=make_coco_transforms(image_set),
+                return_masks=cfg.MODEL.MASKS,
+                cache_mode=cfg.CACHE_MODE,
+                local_rank=get_local_rank(),
+                local_size=get_local_size()
+            )
+            modify_img_paths(dataset)
+            return dataset
+        else:
+            raise ValueError(f'unknown DA_MODE {cfg.DATASET.DA_MODE}')
+
     elif image_set == 'train':
         if cfg.DATASET.DA_MODE == 'source_only':
             return CocoDetection(
@@ -248,30 +308,58 @@ def build(image_set, cfg):
             assert source_domain == 'cityscapes', source_domain
             assert target_domain == 'foggy_cityscapes', target_domain
 
-            # FIXME: test to use src to compute supervised loss
-            # return CrossDomainDADataset(
-            #     source_img_folder=paths[source_domain]['train_img'],
-            #     source_ann_file=paths[source_domain]['train_anno'],
-            #     target_img_folder=paths[target_domain]['train_img'],
-            #     target_ann_file=paths[target_domain]['train_anno'],
-            #     target_like_source_img_folder=paths['city_instruction_cityscapes']['train_img'],
-            #     transforms=make_coco_transforms(image_set),
-            #     return_masks=cfg.MODEL.MASKS,
-            #     cache_mode=cfg.CACHE_MODE,
-            #     local_rank=get_local_rank(),
-            #     local_size=get_local_size()
-            # )
-            return DADataset(
-                source_img_folder=paths['city_instruction_cityscapes']['train_img'],
+            return CrossDomainDADataset(
+                source_img_folder=paths[source_domain]['train_img'],
                 source_ann_file=paths[source_domain]['train_anno'],
                 target_img_folder=paths[target_domain]['train_img'],
                 target_ann_file=paths[target_domain]['train_anno'],
+                target_like_source_img_folder=paths['city_instruction_cityscapes']['train_img'],
                 transforms=make_coco_transforms(image_set),
                 return_masks=cfg.MODEL.MASKS,
                 cache_mode=cfg.CACHE_MODE,
                 local_rank=get_local_rank(),
                 local_size=get_local_size()
             )
+        elif cfg.DATASET.DA_MODE == 'cross_domain_cyclegan_paired':
+            assert source_domain == 'cityscapes', source_domain
+            assert target_domain == 'foggy_cityscapes', target_domain
+
+            dataset = CrossDomainDADataset(
+                source_img_folder=paths[source_domain]['train_img'],
+                source_ann_file=paths[source_domain]['train_anno'],
+                target_img_folder=paths[target_domain]['train_img'],
+                target_ann_file=paths[target_domain]['train_anno'],
+                target_like_source_img_folder=paths['cyclegan_paired']['train_img'],
+                transforms=make_coco_transforms(image_set),
+                return_masks=cfg.MODEL.MASKS,
+                cache_mode=cfg.CACHE_MODE,
+                local_rank=get_local_rank(),
+                local_size=get_local_size()
+            )
+            modify_img_paths(dataset)
+
+            return dataset
+
+        elif cfg.DATASET.DA_MODE == 'cross_domain_cyclegan_unpaired':
+            assert source_domain == 'cityscapes', source_domain
+            assert target_domain == 'foggy_cityscapes', target_domain
+
+            dataset = CrossDomainDADataset(
+                source_img_folder=paths[source_domain]['train_img'],
+                source_ann_file=paths[source_domain]['train_anno'],
+                target_img_folder=paths[target_domain]['train_img'],
+                target_ann_file=paths[target_domain]['train_anno'],
+                target_like_source_img_folder=paths['cyclegan_unpaired']['train_img'],
+                transforms=make_coco_transforms(image_set),
+                return_masks=cfg.MODEL.MASKS,
+                cache_mode=cfg.CACHE_MODE,
+                local_rank=get_local_rank(),
+                local_size=get_local_size()
+            )
+            modify_img_paths(dataset)
+
+            return dataset
+
         else:
             raise ValueError(f'Unknown argument cfg.DATASET.DA_MODE {cfg.DATASET.DA_MODE}')
     raise ValueError(f'unknown image set {image_set}')
