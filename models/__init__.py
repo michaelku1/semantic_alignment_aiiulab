@@ -33,7 +33,7 @@ def build_model(cfg):
         else:
             raise ValueError(f'Wrong key value! `MODEL.VISUAL_PROMPT.LOCATION` should be one of `prepend`, or `add-1-feat`, but got {cfg.MODEL.VISUAL_PROMPT.LOCATION}')
     
-    elif cfg.DATASET.DA_MODE == 'cross_domain':
+    elif 'cross_domain' in cfg.DATASET.DA_MODE:
         print('`build_model` comes from `deformable_detr_cross_domain.py`')
         return build_cross_domain(cfg)
     else:
