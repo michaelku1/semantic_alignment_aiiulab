@@ -209,8 +209,7 @@ class DeformableDETR(nn.Module):
 
         if self.training and self.uda:
             B = outputs_class.shape[1]
-            # end_idx = 2 * B // 3
-            end_idx = B // 2  # FIXME: test to use src to compute supervised loss
+            end_idx = 2 * B // 3
             outputs_class = outputs_class[:, :end_idx]
             outputs_coord = outputs_coord[:, :end_idx]
             if self.two_stage:
@@ -362,14 +361,11 @@ class SetCriterion(nn.Module):
 
     def loss_da(self, outputs, use_focal=False):
         B = outputs.shape[0]
-        # assert B % 3 == 0
-        assert B % 2 == 0  # FIXME: test to use src to compute supervised loss
+        assert B % 3 == 0
 
         targets = torch.empty_like(outputs)
-        # targets[:B//3] = 0
-        # targets[B//3:] = 1
-        targets[:B//2] = 0  # FIXME: test to use src to compute supervised loss
-        targets[B//2:] = 1  # FIXME: test to use src to compute supervised loss
+        targets[:B//3] = 0
+        targets[B//3:] = 1
 
         loss = F.binary_cross_entropy_with_logits(outputs, targets, reduction='none')
 
@@ -502,7 +498,7 @@ class MLP(nn.Module):
 
 
 def build(cfg):
-    if cfg.DATASET.DA_MODE != 'cross_domain':
+    if 'cross_domain' not in cfg.DATASET.DA_MODE:
         raise ImportError('Wrong import! This module is only for cross domain')
 
     device = torch.device(cfg.DEVICE)
