@@ -15,6 +15,7 @@ def plot_map(log_path, plot_lr, plot_class_map=False, plot_max_prompt_norm=False
     df_log = get_rid_of_str_epoch(df_log)
     src_coco_eval, src_max_mAP, src_max_epoch, src_class_coco_evals, _ = get_coco_eval_results(df_log, domain='source')
     tgt_coco_eval, tgt_max_mAP, tgt_max_epoch, tgt_class_coco_evals, class_max_mAPs = get_coco_eval_results(df_log, domain='target')
+    cross_coco_eval, cross_max_mAP, cross_max_epoch, cross_class_coco_evals, _ = get_coco_eval_results(df_log, domain='cross')
 
     fig, ax = plt.subplots(figsize=(15, 8))
     if pretrained_log_path:
@@ -42,6 +43,10 @@ def plot_map(log_path, plot_lr, plot_class_map=False, plot_max_prompt_norm=False
     ax.plot(tgt_coco_eval, lw=3, marker='o', label='target')
     ax.scatter(tgt_max_epoch, tgt_max_mAP, c='r', s=300, marker='*')
     ax.text(x=tgt_max_epoch + 1, y=tgt_max_mAP + 0.001, s=f'({tgt_max_epoch}, {tgt_max_mAP:.4f})')
+    if cross_coco_eval is not None:
+        ax.plot(cross_coco_eval, lw=3, marker='o', label='cross')
+        ax.scatter(cross_max_epoch, cross_max_mAP, c='r', s=300, marker='*')
+        ax.text(x=cross_max_epoch + 1, y=cross_max_mAP + 0.001, s=f'({cross_max_epoch}, {cross_max_mAP:.4f})')
     
     if plot_class_map:
         for (cat_id, cat_name), coco_eval in src_class_coco_evals.items():
@@ -77,13 +82,18 @@ def get_rid_of_str_epoch(df_log):
 
 
 def get_coco_eval_results(df_log, domain='target'):
-    assert domain in ['source', 'target']
+    assert domain in ['source', 'target', 'cross']
 
     col = 'test_{}_coco_eval_bbox'
     if domain == 'source':
         col = col.format('src')
-    else:
+    elif domain == 'target':
         col = col.format('tgt')
+    else:
+        col = col.format('cross')
+
+    if col not in df_log.columns:
+        return None, None, None, None, None
 
     coco_eval = np.stack(df_log[col].values)
     coco_eval = coco_eval[:, 1]  # IoU = 0.5
