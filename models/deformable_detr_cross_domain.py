@@ -361,11 +361,11 @@ class SetCriterion(nn.Module):
 
     def loss_da(self, outputs, use_focal=False):
         B = outputs.shape[0]
-        assert B % 3 == 0
+        assert B == 3, B  # channel query: (bz * num_feat_levels, ,,,)
 
         targets = torch.empty_like(outputs)
-        targets[:B//3] = 0
-        targets[B//3:] = 1
+        targets[:1] = 0
+        targets[1:] = 1
 
         loss = F.binary_cross_entropy_with_logits(outputs, targets, reduction='none')
 
@@ -406,9 +406,10 @@ class SetCriterion(nn.Module):
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs' and k != 'enc_outputs'}
+        assert len(outputs_without_aux['pred_logits']) == 2, len(outputs_without_aux['pred_logits'])
 
         # Retrieve the matching between the outputs of the last layer and the targets
-        targets = targets[:len(outputs_without_aux['pred_logits'])]
+        targets = targets[:2]
         indices = self.matcher(outputs_without_aux, targets)
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes
