@@ -16,6 +16,7 @@ import cv2
 import numpy as np
 import pandas as pd
 from PIL import Image
+from tqdm import tqdm
 from pathlib import Path, PurePath
 from typing import Dict, List, Optional
 import seaborn as sns
@@ -24,6 +25,11 @@ import matplotlib.patches as patches
 
 import torch
 from torchvision.utils import make_grid
+
+from datasets.coco import CocoDetection
+from datasets.DAOD import DADataset, CrossDomainDADataset
+from datasets.data_prefetcher import data_prefetcher
+from util.box_ops import box_cxcywh_to_xyxy
 
 
 def plot_logs(logs, fields=('class_error', 'loss_bbox_unscaled', 'mAP'), ewm_col=0, log_name='log.txt', mode='test'):
@@ -145,10 +151,10 @@ def plot_bbox(
     img_ids: Optional[List[int]] = None,
     prefix: Optional[str] = None
 ):
-    save_dir = Path(save_dir)
+    save_dir = Path(save_dir) / prefix
     save_dir.mkdir(parents=True, exist_ok=True)
 
-    img_ids = img_ids if img_ids is not None else coco.getImgIds()
+    img_ids = img_ids if len(img_ids) > 0 else coco.getImgIds()
 
     # BGR colors for all categories
     colors = [
@@ -180,7 +186,7 @@ def plot_bbox(
                 continue
 
             label_name = coco.cats[label.item()]['name']
-            title = f'{label_name}({score.item():.3f})'
+            title = f'({score.item():.3f})'
             label_count[label.item()] += 1
 
             x1, y1, x2, y2 = np.round(box.cpu().numpy()).astype(np.int64)
@@ -190,10 +196,10 @@ def plot_bbox(
             text_color = (0, 0, 0) if label_name == 'car' else (255, 255, 255)
 
             # plot box
-            cv2.rectangle(img, (x1, y1), (x2, y2), color, 2)
+            cv2.rectangle(img, (x1, y1), (x2, y2), color, 1)
 
             # plot text
-            cv2.rectangle(img, (x1, y1), (x1 + labelSize[0][0] - 1, y1 - labelSize[0][1]), color, cv2.FILLED)  # text background
+            # cv2.rectangle(img, (x1, y1), (x1 + labelSize[0][0] - 1, y1 - labelSize[0][1]), color, cv2.FILLED)  # text background
             cv2.putText(img, title, (x1, y1), cv2.FONT_HERSHEY_COMPLEX, fontScale, text_color, thickness)
 
         x, y = 20, 20
@@ -206,10 +212,98 @@ def plot_bbox(
 
             y += 11 + 5
 
-        file_name = f'{prefix}_img-id={img_id}.png' if prefix else f'img-id={img_id}.png'
+        file_name = f'id={img_id}.png'
         save_path = Path(save_dir) / file_name
         cv2.imwrite(str(save_path), img)
 
+
+def plot_gt_bbox_from_dataset(dataset, img_ids, prefix, output_dir):
+    root_dir = Path(output_dir) / prefix
+    if not root_dir.exists():
+        root_dir.mkdir(parents=True, exist_ok=True)
+    
+    colors = [
+        (47, 52, 227),
+        (63, 153, 246),
+        (74, 237, 255),
+        (114, 193, 56),
+        (181, 192, 77),
+        (220, 144, 52),
+        (205, 116, 101),
+        (226, 97, 149),
+        (155, 109, 246),
+    ]
+    
+    img_ids = img_ids if len(img_ids) > 0 else list(range(len(dataset)))
+    num_img_ids = len(img_ids)
+
+    out = dataset[0]
+    assert len(out) in [2, 4, 6], f'Only support cross dataset len(out) = {len(out)}'
+
+    coco = None
+    for out in tqdm(dataset, desc='ploting...'):
+        if len(out) == 2:
+            assert isinstance(dataset, CocoDetection), type(dataset)
+
+            img_tensor, target = out
+            imgs = [img_tensor]
+            targets = [target]
+            cocos = [dataset.coco]
+
+            img_id = target['image_id'].item()
+            if img_id not in img_ids:
+                continue
+
+        elif len(out) == 4:
+            assert isinstance(dataset, DADataset), type(dataset)
+
+            source_img, target_img, source_target, target_target = out
+            imgs = [source_img, target_img]
+            targets = [source_target, target_target]
+            cocos = [dataset.source.coco, dataset.target.coco]
+
+            img_id = targets[0]['image_id'].item()
+            if img_id not in img_ids:
+                continue
+        else:
+            assert isinstance(dataset, CrossDomainDADataset), type(dataset)
+            source_img, target_img, cross_img, source_target, target_target, cross_target = out
+            imgs = [source_img, target_img, cross_img]
+            targets = [source_target, target_target, cross_target]
+            cocos = [dataset.source.coco, dataset.target.coco, dataset.cross.coco]
+
+            img_id = targets[0]['image_id'].item()
+            if img_id not in img_ids:
+                continue
+
+        num_img_ids -= 1
+
+        for img_tensor, target, coco in zip(imgs, targets, cocos):
+            if img_tensor is None:
+                continue
+            
+            h, w = img_tensor.shape[-2:]
+            img = img_tensor_to_cv2(img_tensor, normalized=True)
+            
+            boxes = box_cxcywh_to_xyxy(target['boxes'])
+            scale_fct = torch.tensor([w, h, w, h], dtype=torch.float32)
+            boxes = boxes * scale_fct[None, :]
+
+            labels = target['labels']
+            
+            for box, label in zip(boxes, labels):
+                color = colors[label.item()]
+                x1, y1, x2, y2 = np.round(box.cpu().numpy()).astype(np.int64)
+                cv2.rectangle(img, (x1, y1), (x2, y2), color, 1)
+
+            file_name = coco.loadImgs(ids=[img_id])[0]['file_name']  # xxx.png
+            file_name = Path(file_name).name
+            save_path = root_dir / f'id={img_id}_{str(file_name)}'
+            cv2.imwrite(str(save_path), img)
+
+        if num_img_ids == 0:
+            break
+            
 
 def plot_tgt_map(
     tgt_tensors,

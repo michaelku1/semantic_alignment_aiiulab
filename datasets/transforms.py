@@ -30,14 +30,14 @@ def crop(image, target, region):
     i, j, h, w = region
 
     # should we do something wrt the original size?
-    target["size"] = torch.tensor([h, w])
+    target["size"] = torch.tensor([h, w], device=target["size"].device)
 
     fields = ["labels", "area", "iscrowd"]
 
     if "boxes" in target:
         boxes = target["boxes"]
-        max_size = torch.as_tensor([w, h], dtype=torch.float32)
-        cropped_boxes = boxes - torch.as_tensor([j, i, j, i])
+        max_size = torch.as_tensor([w, h], dtype=torch.float32, device=boxes.device)
+        cropped_boxes = boxes - torch.as_tensor([j, i, j, i], device=boxes.device)
         cropped_boxes = torch.min(cropped_boxes.reshape(-1, 2, 2), max_size)
         cropped_boxes = cropped_boxes.clamp(min=0)
         area = (cropped_boxes[:, 1, :] - cropped_boxes[:, 0, :]).prod(dim=1)
@@ -69,12 +69,13 @@ def crop(image, target, region):
 def hflip(image, target):
     flipped_image = F.hflip(image)
 
-    w, h = image.size
+    w, h = image.size if isinstance(image, PIL.Image.Image) else tuple(image.shape[-2:][::-1])
+    # w, h = image.size
 
     target = target.copy()
     if "boxes" in target:
         boxes = target["boxes"]
-        boxes = boxes[:, [2, 1, 0, 3]] * torch.as_tensor([-1, 1, -1, 1]) + torch.as_tensor([w, 0, w, 0])
+        boxes = boxes[:, [2, 1, 0, 3]] * torch.as_tensor([-1, 1, -1, 1], device=boxes.device) + torch.as_tensor([w, 0, w, 0], device=boxes.device)
         target["boxes"] = boxes
 
     if "masks" in target:
@@ -111,20 +112,24 @@ def resize(image, target, size, max_size=None):
             return size[::-1]
         else:
             return get_size_with_aspect_ratio(image_size, size, max_size)
-
-    size = get_size(image.size, size, max_size)
+    
+    image_size = image.size if isinstance(image, PIL.Image.Image) else tuple(image.shape[-2:][::-1])
+    size = get_size(image_size, size, max_size)
+    # size = get_size(image.size, size, max_size)
     rescaled_image = F.resize(image, size)
 
     if target is None:
         return rescaled_image, None
 
-    ratios = tuple(float(s) / float(s_orig) for s, s_orig in zip(rescaled_image.size, image.size))
+    rescaled_image_size = rescaled_image.size if isinstance(rescaled_image, PIL.Image.Image) else tuple(rescaled_image.shape[-2:][::-1])
+    ratios = tuple(float(s) / float(s_orig) for s, s_orig in zip(rescaled_image_size, image_size))
+    # ratios = tuple(float(s) / float(s_orig) for s, s_orig in zip(rescaled_image.size, image.size))
     ratio_width, ratio_height = ratios
 
     target = target.copy()
     if "boxes" in target:
         boxes = target["boxes"]
-        scaled_boxes = boxes * torch.as_tensor([ratio_width, ratio_height, ratio_width, ratio_height])
+        scaled_boxes = boxes * torch.as_tensor([ratio_width, ratio_height, ratio_width, ratio_height], device=boxes.device)
         target["boxes"] = scaled_boxes
 
     if "area" in target:
@@ -133,7 +138,7 @@ def resize(image, target, size, max_size=None):
         target["area"] = scaled_area
 
     h, w = size
-    target["size"] = torch.tensor([h, w])
+    target["size"] = torch.tensor([h, w], device=target["size"].device)
 
     if "masks" in target:
         target['masks'] = interpolate(
@@ -170,8 +175,12 @@ class RandomSizeCrop(object):
         self.max_size = max_size
 
     def __call__(self, img: PIL.Image.Image, target: dict):
-        w = random.randint(self.min_size, min(img.width, self.max_size))
-        h = random.randint(self.min_size, min(img.height, self.max_size))
+        if isinstance(img, PIL.Image.Image):
+            width, height = img.width, img.height
+        else:
+            height, width = img.shape[-2:]
+        w = random.randint(self.min_size, min(width, self.max_size))
+        h = random.randint(self.min_size, min(height, self.max_size))
         region = T.RandomCrop.get_params(img, [h, w])
         return crop(img, target, region)
 
@@ -237,7 +246,9 @@ class RandomSelect(object):
 
 class ToTensor(object):
     def __call__(self, img, target):
-        return F.to_tensor(img), target
+        if isinstance(img, PIL.Image.Image):
+            return F.to_tensor(img), target  # divided by 255
+        return img, target
 
 
 class RandomErasing(object):
@@ -263,7 +274,7 @@ class Normalize(object):
         if "boxes" in target:
             boxes = target["boxes"]
             boxes = box_xyxy_to_cxcywh(boxes)
-            boxes = boxes / torch.tensor([w, h, w, h], dtype=torch.float32)
+            boxes = boxes / torch.tensor([w, h, w, h], dtype=torch.float32, device=boxes.device)
             target["boxes"] = boxes
         return image, target
 

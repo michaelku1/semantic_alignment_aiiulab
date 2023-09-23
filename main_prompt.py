@@ -90,18 +90,18 @@ def main(cfg):
     if cfg.DIST.DISTRIBUTED:
         if cfg.CACHE_MODE:
             sampler_train = samplers.NodeDistributedSampler(dataset_train)
-            sampler_val_src = samplers.NodeDistributedSampler(dataset_val_src, shuffle=False)
+            sampler_val_src = samplers.NodeDistributedSampler(dataset_val_src, shuffle=False) if dataset_val_src is not None else None
             sampler_val_tgt = samplers.NodeDistributedSampler(dataset_val_tgt, shuffle=False)
         else:
             sampler_train = samplers.DistributedSampler(dataset_train)
-            sampler_val_src = samplers.NodeDistributedSampler(dataset_val_src, shuffle=False)
+            sampler_val_src = samplers.NodeDistributedSampler(dataset_val_src, shuffle=False) if dataset_val_src is not None else None
             sampler_val_tgt = samplers.DistributedSampler(dataset_val_tgt, shuffle=False)
     else:
         sampler_train = torch.utils.data.RandomSampler(dataset_train)
-        sampler_val_src = samplers.NodeDistributedSampler(dataset_val_src, shuffle=False)
+        sampler_val_src = samplers.NodeDistributedSampler(dataset_val_src, shuffle=False) if dataset_val_src is not None else None
         sampler_val_tgt = torch.utils.data.SequentialSampler(dataset_val_tgt)
 
-    if cfg.DATASET.DA_MODE == 'uda':
+    if 'uda' in cfg.DATASET.DA_MODE:
         assert cfg.TRAIN.BATCH_SIZE % 2 == 0, f'cfg.TRAIN.BATCH_SIZE {cfg.TRAIN.BATCH_SIZE} should be a multiple of 2'
         batch_sampler_train = torch.utils.data.BatchSampler(
             sampler_train, cfg.TRAIN.BATCH_SIZE//2, drop_last=True)
@@ -118,7 +118,7 @@ def main(cfg):
                                        pin_memory=True)
     data_loader_val_src = DataLoader(dataset_val_src, cfg.TRAIN.BATCH_SIZE, sampler=sampler_val_src,
                                      drop_last=False, collate_fn=utils.collate_fn, num_workers=cfg.NUM_WORKERS,
-                                     pin_memory=True)
+                                     pin_memory=True) if dataset_val_src is not None else None
     data_loader_val_tgt = DataLoader(dataset_val_tgt, cfg.TRAIN.BATCH_SIZE, sampler=sampler_val_tgt,
                                      drop_last=False, collate_fn=utils.collate_fn, num_workers=cfg.NUM_WORKERS,
                                      pin_memory=True)
@@ -255,7 +255,7 @@ def main(cfg):
 
     else:
         raise ValueError('Please specify training mode')
-
+    
     if cfg.TRAIN.SGD:
         optimizer = torch.optim.SGD(param_dicts, lr=cfg.TRAIN.LR, momentum=0.9,
                                     weight_decay=cfg.TRAIN.WEIGHT_DECAY)
@@ -300,6 +300,7 @@ def main(cfg):
                 cfg.RESUME, map_location='cpu', check_hash=True)
         else:
             checkpoint = torch.load(cfg.RESUME, map_location='cpu')
+        print('The model is loaded')
         missing_keys, unexpected_keys = model_without_ddp.load_state_dict(checkpoint['model'], strict=False)
         unexpected_keys = [k for k in unexpected_keys if not (k.endswith('total_params') or k.endswith('total_ops'))]
         if len(missing_keys) > 0:
@@ -326,12 +327,30 @@ def main(cfg):
                 lr_scheduler.base_lrs = list(map(lambda group: group['initial_lr'], optimizer.param_groups))
             lr_scheduler.step(lr_scheduler.last_epoch)
             START_EPOCH = checkpoint['epoch'] + 1
+            print('The optimizer is loaded')
+        else:
+            START_EPOCH = 0
 
         # check the resumed model
         if not cfg.EVAL:
-            test_tgt_stats, coco_evaluator = evaluate(
-                model, criterion, postprocessors, data_loader_val_tgt, base_ds_tgt, device, cfg, prefix='init_eval'
+            print()
+            print('Start evaluation before training')
+            print('=== Target Domain ===')
+            test_tgt_stats, _ = evaluate(
+                model, criterion, postprocessors, data_loader_val_tgt, base_ds_tgt, device, cfg,
+                category_ids=cfg.DATASET.CATEGORY_IDS,  # for bdd
+                prefix='init_eval_tgt'
             )
+
+            log_stats = {
+                **{f'test_tgt_{k}': v for k, v in test_tgt_stats.items()},
+                'epoch': 'before training',
+                'n_parameters': n_parameters
+            }
+                        
+            if cfg.OUTPUT_DIR and utils.is_main_process():
+                with (output_dir / "log.txt").open("a") as f:
+                    f.write(json.dumps(log_stats) + "\n")
 
     # load checkpoint and start a new training
     elif cfg.RESUME and cfg.FINETUNE:
@@ -353,15 +372,25 @@ def main(cfg):
         if not cfg.EVAL:
             print()
             print('Start evaluation before fine tuning')
-            test_src_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                                      data_loader_val_src, base_ds_src, device, cfg, prefix='init_eval_tgt')
+            if dataset_val_src is not None:
+                print('=== Source Domain ===')
+                test_src_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
+                                                          data_loader_val_src, base_ds_src, device, cfg, prefix='init_eval_tgt')
+            else:
+                test_src_stats = {}
+
+            print('=== Target Domain ===')
             test_tgt_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                                      data_loader_val_tgt, base_ds_tgt, device, cfg, prefix='init_eval_tgt')
+                                                      data_loader_val_tgt, base_ds_tgt, device, cfg,
+                                                      category_ids=cfg.DATASET.CATEGORY_IDS,  # for bdd
+                                                      prefix='init_eval_tgt')
             
-            log_stats = {**{f'test_src_{k}': v for k, v in test_src_stats.items()},
-                        **{f'test_tgt_{k}': v for k, v in test_tgt_stats.items()},
-                        'epoch': 'before fine tuning',
-                        'n_parameters': n_parameters}
+            log_stats = {
+                **{f'test_src_{k}': v for k, v in test_src_stats.items()},
+                **{f'test_tgt_{k}': v for k, v in test_tgt_stats.items()},
+                'epoch': 'before fine tuning',
+                'n_parameters': n_parameters
+            }
                         
             if cfg.OUTPUT_DIR and utils.is_main_process():
                 with (output_dir / "log.txt").open("a") as f:
@@ -373,13 +402,34 @@ def main(cfg):
 
     if cfg.EVAL:
         CURRENT_EPOCH = checkpoint['epoch'] if 'epoch' in checkpoint else -1
-        test_src_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                                  data_loader_val_src, base_ds_src, device, cfg, prefix=f'eval_src_epoch={CURRENT_EPOCH}')
+
+        test_src_stats = {}
+        if dataset_val_src is not None:
+            print('=== Source Domain ===')
+            test_src_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
+                                                      data_loader_val_src, base_ds_src, device, cfg,
+                                                      prefix=f'eval_src_epoch={CURRENT_EPOCH}')
+
+        print('=== Target Domain ===')
         test_tgt_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
-                                                  data_loader_val_tgt, base_ds_tgt, device, cfg, prefix=f'eval_tgt_epoch={CURRENT_EPOCH}')
-        if cfg.OUTPUT_DIR:
-            utils.save_on_master(coco_evaluator.coco_eval["bbox"].eval, output_dir / "eval.pth")
+                                                  data_loader_val_tgt, base_ds_tgt, device, cfg,
+                                                  category_ids=cfg.DATASET.CATEGORY_IDS,  # for bdd
+                                                  prefix=f'eval_tgt_epoch={CURRENT_EPOCH}')
+        
+        log_stats = {
+            **{f'test_src_{k}': v for k, v in test_src_stats.items()},
+            **{f'test_tgt_{k}': v for k, v in test_tgt_stats.items()},
+            'epoch': CURRENT_EPOCH,
+            'n_parameters': n_parameters
+        }
+
+        if cfg.OUTPUT_DIR and utils.is_main_process():
+            with (output_dir / "log.txt").open("a") as f:
+                f.write(json.dumps(log_stats) + "\n")
         return
+    
+    checkpoint_dir = output_dir / 'checkpoints'
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
         
     print("Start training")
     start_time = time.time()
@@ -393,10 +443,10 @@ def main(cfg):
 
         lr_scheduler.step()
         if cfg.OUTPUT_DIR:
-            checkpoint_paths = [output_dir / 'checkpoint.pth']
+            checkpoint_paths = [checkpoint_dir / 'checkpoint.pth']
             # extra checkpoint before LR drop and every 5 epochs
             if (epoch + 1) % cfg.TRAIN.LR_DROP == 0 or (epoch + 1) % 1 == 0:
-                checkpoint_paths.append(output_dir / f'checkpoint{epoch:04}.pth')
+                checkpoint_paths.append(checkpoint_dir / f'checkpoint{epoch:04}.pth')
             for checkpoint_path in checkpoint_paths:
                 utils.save_on_master({
                     'model': model_without_ddp.state_dict(),
@@ -406,11 +456,18 @@ def main(cfg):
                     'cfg': cfg,
                 }, checkpoint_path)
 
-        test_src_stats, coco_evaluator = evaluate(
-            model, criterion, postprocessors, data_loader_val_src, base_ds_src, device, cfg, prefix=f'eval_src_epoch={epoch}'
-        )
+        test_src_stats = {}
+        if dataset_val_src is not None:
+            print('=== Source Domain ===')
+            test_src_stats, coco_evaluator = evaluate(
+                model, criterion, postprocessors, data_loader_val_src, base_ds_src, device, cfg, prefix=f'eval_src_epoch={epoch}'
+            )
+            
+        print('=== Target Domain ===')
         test_tgt_stats, coco_evaluator = evaluate(
-            model, criterion, postprocessors, data_loader_val_tgt, base_ds_tgt, device, cfg, prefix=f'eval_tgt_epoch={epoch}'
+            model, criterion, postprocessors, data_loader_val_tgt, base_ds_tgt, device, cfg,
+            category_ids=cfg.DATASET.CATEGORY_IDS,  # for bdd
+            prefix=f'eval_tgt_epoch={epoch}'
         )
 
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},

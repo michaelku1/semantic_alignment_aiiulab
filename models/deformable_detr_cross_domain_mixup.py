@@ -26,7 +26,7 @@ from .backbone import build_backbone
 from .matcher import build_matcher
 from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
-from .deformable_transformer import build_deforamble_transformer
+from .deformable_transformer_cross_domain_mixup import build_deforamble_transformer
 from .utils import GradientReversal
 import copy
 
@@ -184,7 +184,7 @@ class DeformableDETR(nn.Module):
         query_embeds = None
         if not self.two_stage:
             query_embeds = self.query_embed.weight
-        hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output = self.transformer(srcs, masks, pos, query_embeds)
+        memory, hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output = self.transformer(srcs, masks, pos, query_embeds)
 
         outputs_classes = []
         outputs_coords = []
@@ -242,6 +242,9 @@ class DeformableDETR(nn.Module):
         if self.training and self.uda:
             out['da_output'] = da_output
 
+        output_all = kwargs.get('output_all', False)
+        if output_all:
+            return out, features, memory, hs
         return out
 
     @torch.jit.unused
@@ -367,18 +370,17 @@ class SetCriterion(nn.Module):
         }
         return losses
 
-    def loss_da(self, outputs, use_focal=False):
+    def loss_da(self, outputs, use_focal=False, domain_labels=[0, 1]):
         # space_query: (bz, num_layers, 1)
         # channel_query: (bz * num_feat_levels, num_layers, 1)
         # instance_query: (bz, 1, 1)
         B = outputs.shape[0]
 
         targets = torch.empty_like(outputs)
-        targets[:B//3] = 0  # source
-        targets[B//3:2*B//3] = self.cross_domain_label  # cross
-        targets[2*B//3:] = 1  # target
+        targets[:B//2] = domain_labels[0]  # source + int
+        targets[B//2:] = domain_labels[1]  # target
 
-        loss = F.binary_cross_entropy_with_logits(outputs, targets, reduction='none')
+        loss = F.binary_cross_entropy_with_logits(outputs, targets, reduction='none')  # has the same shape with outputs
 
         if use_focal:
             prob = outputs.sigmoid()
@@ -409,7 +411,7 @@ class SetCriterion(nn.Module):
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
         return loss_map[loss](outputs, targets, indices, num_boxes, **kwargs)
 
-    def forward(self, outputs, targets):
+    def forward(self, outputs, targets, domain_labels=[0, 1]):
         """ This performs the loss computation.
         Parameters:
              outputs: dict of tensors, see the output specification of the model for the format
@@ -454,7 +456,7 @@ class SetCriterion(nn.Module):
         if 'da_output' in outputs:
             for k, v in outputs['da_output'].items():
                 # print(k, v.shape)
-                losses[f'loss_{k}'] = self.loss_da(v, use_focal='query' in k)
+                losses[f'loss_{k}'] = self.loss_da(v, use_focal='query' in k, domain_labels=domain_labels)
 
         return losses
 
@@ -510,8 +512,8 @@ class MLP(nn.Module):
 
 
 def build(cfg):
-    if not cfg.MODEL.CROSS_DOMAIN.SWITCH:
-        raise ImportError('Wrong import! This module is only for cross domain')
+    if not cfg.DATASET.MIXUP.SWITCH:
+        raise ImportError('Wrong import! This module is only for cross domain mixup')
 
     device = torch.device(cfg.DEVICE)
 

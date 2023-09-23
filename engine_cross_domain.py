@@ -64,7 +64,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         # DEBUG for nan grad
         # with torch.autograd.detect_anomaly():
         outputs = model(samples)
-        loss_dict = criterion(outputs, targets)
+        loss_dict = criterion(outputs, targets[:2])
         weight_dict = criterion.weight_dict
 
         # the loss used for optimization
@@ -158,6 +158,9 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, cfg
     coco_evaluator = CocoEvaluator(base_ds, iou_types)
     coco_evaluators_per_class = {}
     for cat_id in base_ds.getCatIds():
+        if 'category_ids' in kwargs:
+            if cat_id not in kwargs['category_ids']:
+                continue
         evaluator = CocoEvaluator(base_ds, iou_types)
         for iou_type in iou_types:
             evaluator.coco_eval[iou_type].params.catIds = [cat_id]
@@ -273,7 +276,10 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, cfg
     stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
     if coco_evaluator is not None:
         if 'bbox' in postprocessors.keys():
-            stats['coco_eval_bbox'] = coco_evaluator.coco_eval['bbox'].stats.tolist()
+            ratio = 1
+            if 'category_ids' in kwargs:
+                ratio = (cfg.DATASET.NUM_CLASSES - 1) / len(cfg.DATASET.CATEGORY_IDS)
+            stats['coco_eval_bbox'] = [v * ratio for v in coco_evaluator.coco_eval['bbox'].stats.tolist()]
             for cat_id, evaluator in coco_evaluators_per_class.items():
                 cat_name = base_ds.cats[cat_id]['name']
                 k = f'coco_eval_bbox_cat-id={cat_id}_cat-name={cat_name}'

@@ -741,6 +741,53 @@ def add_1_prompt_embed_to_tgt(tgt, src_prompt_embed=None, tgt_prompt_embed=None)
     return tgt + prompt_embed
     
 
+def prepend_prompts(tokens, src_prompt_tokens=None, tgt_prompt_tokens=None, data_domain_type='src_only'):
+    # tokens: (N, num_queries, d_model)
+    # src_prompt_tokens:
+    #     (num_prompt_tokens, hidden_dim*2)
+    #     None
+    # tgt_prompt_tokens:
+    #     (num_prompt_tokens, hidden_dim*2)
+    #     None
+
+    N, num_queries, C = tokens.shape
+
+    if src_prompt_tokens is None and tgt_prompt_tokens is None:
+        raise ValueError('Must give at least one prompt embeds')
+
+    prompt_tokens = None
+    num_prompt_tokens = 0
+    if data_domain_type == 'src_only':
+        assert src_prompt_tokens is not None
+        num_prompt_tokens = src_prompt_tokens.shape[0]
+        prompt_tokens = src_prompt_tokens.unsqueeze(0).expand(N, -1, -1)
+
+    elif data_domain_type == 'tgt_only':
+        assert tgt_prompt_tokens is not None
+        num_prompt_tokens = tgt_prompt_tokens.shape[0]
+        prompt_tokens = tgt_prompt_tokens.unsqueeze(0).expand(N, -1, -1)
+        
+    elif data_domain_type == 'src+tgt':
+        assert N % 2 == 0
+        assert src_prompt_tokens is not None and tgt_prompt_tokens is not None
+        num_prompt_tokens = src_prompt_tokens.shape[0]
+        prompt_tokens = torch.cat([
+            src_prompt_tokens.unsqueeze(0).expand(N // 2, -1, -1),
+            tgt_prompt_tokens.unsqueeze(0).expand(N // 2, -1, -1),
+        ], dim=0)
+
+    assert prompt_tokens.shape[0] == N
+    assert prompt_tokens.shape[1] == num_prompt_tokens
+    assert prompt_tokens.shape[2] == C
+
+    tokens = torch.cat([tokens, prompt_tokens], dim=1)
+    assert tokens.shape[0] == N
+    assert tokens.shape[1] == num_queries + num_prompt_tokens
+    assert tokens.shape[2] == C
+
+    return tokens
+
+
 def prepend_prompt_to_tgt(tgt, src_prompt_embed=None, tgt_prompt_embed=None):
     # tgt: (N, #query, d_model), object queries
     # xxx_prompt_embed:
@@ -787,6 +834,14 @@ def prepend_prompt_to_tgt(tgt, src_prompt_embed=None, tgt_prompt_embed=None):
     assert tgt.shape[2] == C
 
     return tgt
+
+
+def compute_delta(current_iters, total_iters, alpha, beta, min_delta):
+    r = current_iters / total_iters
+    delta = (2 / (1 + math.exp(-alpha * r)) - 1) * beta
+    delta = max(delta, min_delta)
+
+    return delta
 
 
 def init_parameter_list(param_list: nn.ParameterList, a: float, b: float):

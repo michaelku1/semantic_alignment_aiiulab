@@ -20,7 +20,15 @@ from torch.nn.init import xavier_uniform_, constant_, uniform_, normal_
 
 from util.misc import inverse_sigmoid
 from models.ops.modules import MSDeformAttn
-from models.utils import DomainAttention, GradientReversal, remove_mask_and_warp
+from models.utils import (
+    DomainAttention,
+    GradientReversal,
+    remove_mask_and_warp,
+    get_valid_ratio,
+    get_reference_points,
+    prepend_prompts,
+    prepend_prompt_to_tgt
+)
 
 class DeformableTransformer(nn.Module):
     def __init__(self, d_model=256, nhead=8,
@@ -28,7 +36,8 @@ class DeformableTransformer(nn.Module):
                  activation="relu", return_intermediate_dec=False,
                  num_feature_levels=4, dec_n_points=4, enc_n_points=4,
                  two_stage=False, two_stage_num_proposals=300,
-                 space_align=False, channel_align=False, instance_align=False):
+                 space_align=False, channel_align=False, instance_align=False,
+                 deep_prompt=True, deep_shared=False):
         super().__init__()
 
         self.d_model = d_model
@@ -40,6 +49,9 @@ class DeformableTransformer(nn.Module):
         self.channel_align = channel_align
         self.instance_align = instance_align
 
+        self.deep_prompt = deep_prompt
+        self.deep_shared = deep_shared
+
         encoder_layer = DeformableTransformerEncoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
                                                           num_feature_levels, nhead, enc_n_points, space_align, channel_align)
@@ -48,9 +60,7 @@ class DeformableTransformer(nn.Module):
         decoder_layer = DeformableTransformerDecoderLayer(d_model, dim_feedforward,
                                                           dropout, activation,
                                                           num_feature_levels, nhead, dec_n_points, instance_align)
-        self.decoder = DeformableTransformerDecoder(decoder_layer, num_decoder_layers, return_intermediate_dec)
-        # num_decoder_layers = 6
-        # return_intermediate_dec = True, see #L609
+        self.decoder = DeformableTransformerDecoder(decoder_layer, num_decoder_layers, return_intermediate_dec, deep_prompt, deep_shared)
 
         self.level_embed = nn.Parameter(torch.Tensor(num_feature_levels, d_model))
 
@@ -86,7 +96,6 @@ class DeformableTransformer(nn.Module):
             constant_(self.reference_points.bias.data, 0.)
         normal_(self.level_embed)
 
-    # it is not necessary for one stage, only for two stage
     def get_proposal_pos_embed(self, proposals):
         num_pos_feats = 128
         temperature = 10000
@@ -102,7 +111,6 @@ class DeformableTransformer(nn.Module):
         pos = torch.stack((pos[:, :, :, 0::2].sin(), pos[:, :, :, 1::2].cos()), dim=4).flatten(2)
         return pos
 
-    # it is not necessary for one stage, only for two stage
     def gen_encoder_output_proposals(self, memory, memory_padding_mask, spatial_shapes):
         N_, S_, C_ = memory.shape
         base_scale = 4.0
@@ -136,33 +144,32 @@ class DeformableTransformer(nn.Module):
         return output_memory, output_proposals
 
     def get_valid_ratio(self, mask):
-        # mask: (N, H_, W_), 1 for padded pixels
+        # mask: (N, h, w)
+        #   True for ignoring the corresponding keys in attention
+        #   False for paying attention to the corresponding keys
+
         _, H, W = mask.shape
-        valid_H = torch.sum(~mask[:, :, 0], 1)  # (N,)
-        valid_W = torch.sum(~mask[:, 0, :], 1)  # (N,)
+        valid_H = torch.sum(~mask[:, :, 0], 1)  # (bz,), real heights of images
+        valid_W = torch.sum(~mask[:, 0, :], 1)  # (bz,), ral widths of images
         valid_ratio_h = valid_H.float() / H
         valid_ratio_w = valid_W.float() / W
-        valid_ratio = torch.stack([valid_ratio_w, valid_ratio_h], -1)  # (N, 2)
+        valid_ratio = torch.stack([valid_ratio_w, valid_ratio_h], -1)  # (bz, 2)
         return valid_ratio
 
-    def forward(self, srcs, masks, pos_embeds, query_embed=None):
-        # srcs: [(N, C, H_0, W_0),
-        #        (N, C, H_1, W_1),
-        #        (N, C, H_2, W_2),
-        #        (N, C, H_3,  W_3)]
-        # masks: [(N, H_0, W_0),
-        #         (N, H_1, W_1),
-        #         (N, H_2, W_2),
-        #         (N, H_3, W_3)]
-        # pos_embeds: [(N, C, H_0, W_),
-        #              (N, C, H_1, W_1),
-        #              (N, C, H_2, W_2),
-        #              (N, C, H_3, W_3)]
-        # num_queries: (#query, d_model * 2)
+    def forward(
+        self, srcs, masks, pos_embeds, query_embed=None,
+        src_prompt_embeds=None, tgt_prompt_embeds=None,
+        data_domain_type='src_only', prompt_domain_type='same'
+    ):
         assert self.two_stage or query_embed is not None
 
+        # xxx_prompt_embed:
+        #   (num_prompt_tokens, hidden_dim * 2)
+        #   (num_layer, num_prompt_tokens, hidden_dim * 2)
+        #   None
+
         # prepare input for encoder
-        src_flatten = []  # flatten feature along spatial axes for concatenating along spatial axes
+        src_flatten = []
         mask_flatten = []
         lvl_pos_embed_flatten = []
         spatial_shapes = []
@@ -170,50 +177,39 @@ class DeformableTransformer(nn.Module):
             bs, c, h, w = src.shape
             spatial_shape = (h, w)
             spatial_shapes.append(spatial_shape)
-            src = src.flatten(2).transpose(1, 2)  # (N, HW, C), flatten along dim=2~3
-            mask = mask.flatten(1)  # (N, HW), flatten along dim=1~2
-            pos_embed = pos_embed.flatten(2).transpose(1, 2)  # (N, HW, C)
-            lvl_pos_embed = pos_embed + self.level_embed[lvl].view(1, 1, -1)  # (N, HW, C), level_embed = multi_scale level(concate multi scale feature)
+            src = src.flatten(2).transpose(1, 2)
+            mask = mask.flatten(1)
+            pos_embed = pos_embed.flatten(2).transpose(1, 2)
+            lvl_pos_embed = pos_embed + self.level_embed[lvl].view(1, 1, -1)
             lvl_pos_embed_flatten.append(lvl_pos_embed)
             src_flatten.append(src)
             mask_flatten.append(mask)
-        # spatial_shapes: [(H_0, W_0), (H_1, W_1), (H_2, W_2), (H_3, W_3)]
-
-        src_flatten = torch.cat(src_flatten, 1)  # (N, H_0W_0+...H_3W_3, C), cat so that attention can be computed across multi-scale features
-        mask_flatten = torch.cat(mask_flatten, 1)  # (N, H_0W_0+...H_3W_3)
-        lvl_pos_embed_flatten = torch.cat(lvl_pos_embed_flatten, 1)  # (N, H_0W_0+...H_3W_3, C)
-        spatial_shapes = torch.as_tensor(spatial_shapes, dtype=torch.long, device=src_flatten.device)  # (#lvl, 2)
-        level_start_index = torch.cat((
-            spatial_shapes.new_zeros((1, )),
-            spatial_shapes.prod(1).cumsum(0)[:-1]
-            # spatial_shapes.prod(1) = tensor([H_0W_0=14028, H_1W_1=3528, H_2W_2=882, H_3W_3=231])
-            # spatial_shapes.prod(1).cumsum(0) = tensor([H_0W_0=14028,
-            #                                            H_0W_0+H_1W_1=17556,
-            #                                            H_0W_0+H_1W_1+H_2W_2=18438,
-            #                                            H_0W_0+H_1W_1+H_2W_2+H_3W_3=18669])
-        ))  # tensor([0, H_0W_0=14028, H_0W_0+H_1W_1=17556, H_0W_0+H_1W_1+H_2W_2=18438])
-        valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)  # (N, #lvl, 2), the real width & height ratio
+        src_flatten = torch.cat(src_flatten, 1)
+        mask_flatten = torch.cat(mask_flatten, 1)
+        lvl_pos_embed_flatten = torch.cat(lvl_pos_embed_flatten, 1)
+        spatial_shapes = torch.as_tensor(spatial_shapes, dtype=torch.long, device=src_flatten.device)
+        level_start_index = torch.cat((spatial_shapes.new_zeros((1, )), spatial_shapes.prod(1).cumsum(0)[:-1]))
+        valid_ratios = torch.stack([self.get_valid_ratio(m) for m in masks], 1)  # (bz, #lvl, 2=(w, h))
 
         space_query, channel_query, instance_query = None, None, None
-        if self.training:
+        # if self.training:  # original implementation
+        if self.training or not self.training:  # compute uda loss even when model is in evaluation
             if self.space_align:
                 space_query = self.space_query.expand(src_flatten.shape[0], -1, -1)
             if self.channel_align:
                 src_warped, pos_warped = remove_mask_and_warp(
                     src_flatten, lvl_pos_embed_flatten, mask_flatten, level_start_index, spatial_shapes
                 )
-                channel_query = self.channel_query(self.grl(src_warped+pos_warped)).flatten(0, 1).transpose(1, 2)  # (bz * num_feat_levels, 1, C)
+                channel_query = self.channel_query(self.grl(src_warped+pos_warped)).flatten(0, 1).transpose(1, 2)
 
         # encoder
         memory, space_query, channel_query = self.encoder(
-            src_flatten, space_query, channel_query, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten, mask_flatten
+            src_flatten, space_query, channel_query, spatial_shapes, level_start_index, valid_ratios, lvl_pos_embed_flatten, mask_flatten,
         )
-        # memory: (N, H_0W_0+...H_3W_3=18669, C), transformed feature map outputed from encoder
-        # space_query: list of space queries collected from different layers
-        # channel_query: list of channel queries collected from different layers
 
         da_output = {}
-        if self.training:
+        # if self.training:  # original implementation
+        if self.training or not self.training:  # compute uda loss even when model is in evaluation
             if self.space_align:
                 da_output['space_query'] = torch.cat(space_query, dim=1)
             if self.channel_align:
@@ -237,30 +233,50 @@ class DeformableTransformer(nn.Module):
             pos_trans_out = self.pos_trans_norm(self.pos_trans(self.get_proposal_pos_embed(topk_coords_unact)))
             query_embed, tgt = torch.split(pos_trans_out, c, dim=2)
         else:
-            # query_embed: (#query, d_model * 2)
-            query_embed, tgt = torch.split(query_embed, c, dim=1)  # tgt: object queries, query_embed: positional embedding of object queries
-            query_embed = query_embed.unsqueeze(0).expand(bs, -1, -1)  # (N, #query, d_model)
-            tgt = tgt.unsqueeze(0).expand(bs, -1, -1)  # (N, #query, d_model)
-            reference_points = self.reference_points(query_embed).sigmoid()  # (N, #query, 2)
-            init_reference_out = reference_points  # (N, #query, 2)
+            query_embed, tgt = torch.split(query_embed, c, dim=1)
+            query_embed = query_embed.unsqueeze(0).expand(bs, -1, -1)
+            tgt = tgt.unsqueeze(0).expand(bs, -1, -1)
+            # query_embed: (N, num_queries, d_model)
+            # tgt: (N, num_queries, d_model)
 
-        if self.training and self.instance_align:
+            src_prompt_embed = src_prompt_tgt = None
+            if src_prompt_embeds is not None:
+                src_prompt_embed, src_prompt_tgt = torch.split(src_prompt_embeds, c, dim=1)
+            
+            tgt_prompt_embed = tgt_prompt_tgt = None
+            if tgt_prompt_embeds is not None:
+                tgt_prompt_embed, tgt_prompt_tgt = torch.split(tgt_prompt_embeds, c, dim=1)
+
+            # xxx_prompt_embed:
+            #     (num_prompts, d_model)
+            #     None
+            # xxx_prompt_tgt:
+            #     (num_prompts, d_model)
+            #     None
+
+            query_embed = prepend_prompts(query_embed, src_prompt_embed, tgt_prompt_embed, data_domain_type)
+            tgt = prepend_prompts(tgt, src_prompt_tgt, tgt_prompt_tgt, data_domain_type)
+
+            reference_points = self.reference_points(query_embed).sigmoid()
+            init_reference_out = reference_points
+
+        # if self.training and self.instance_align:  # original implementation
+        if self.instance_align:  # compute uda loss even when model is in evaluation
             instance_query = self.instance_query.expand(tgt.shape[0], -1, -1)
 
         # decoder
         hs, inter_references, instance_query = self.decoder(
-            tgt, instance_query, reference_points, memory, spatial_shapes, level_start_index, valid_ratios, query_embed, mask_flatten
+            tgt, instance_query, reference_points, memory, spatial_shapes, level_start_index, valid_ratios, query_embed, mask_flatten,
         )
-        # hg: (#decoder_layer, N, #query, d_model), object query tensor outputed from decoder
-        # inter_references: (#decoder_layer, N, #query, 4), predicted box coordinates from decoder
-        # instance_query: (N, 1, d_model)
 
-        if self.training and self.instance_align:
+        # if self.training and self.instance_align:  # original implementation
+        if self.instance_align:  # compute uda loss even when model is in evaluation
             da_output['instance_query'] = instance_query
 
         inter_references_out = inter_references
         if self.two_stage:
-            return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact, da_output        
+            return hs, init_reference_out, inter_references_out, enc_outputs_class, enc_outputs_coord_unact, da_output
+        
         return hs, init_reference_out, inter_references_out, None, None, da_output
 
 
@@ -303,15 +319,6 @@ class DeformableTransformerEncoderLayer(nn.Module):
         return src
 
     def forward(self, src, space_query, channel_query, pos, reference_points, spatial_shapes, level_start_index, padding_mask=None):
-        # src: (N, H_0W_0+...H_3W_3, C)
-        # space_query: (N, 1, d_model)
-        # channel_query: ?
-        # pos: (N, H_0W_0+...H_3W_3, C)
-        # reference_points: ?
-        # spatial_shapes: (#lvl, 2), [(H_0, W_0), (H_1, W_1), (H_2, W_2), (H_3, W_3)], the feature shape in each level
-        # level_start_index: tensor([0, H_0W_0=14028, H_0W_0+H_1W_1=17556, H_0W_0+H_1W_1+H_2W_2=18438])
-        # padding_mask: (N, H_0W_0+...H_3W_3)
-
         # self attention
         src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
         src = src + self.dropout1(src2)
@@ -319,15 +326,14 @@ class DeformableTransformerEncoderLayer(nn.Module):
 
         if self.training:
             if self.space_align:
-                space_query = self.space_attn(space_query, src, pos, padding_mask)  # (N, 1, d_model), space_query is updated by residual connection while src & pos remains
+                space_query = self.space_attn(space_query, src, pos, padding_mask)
             if self.channel_align:
                 src_warped, pos_warped = remove_mask_and_warp(src, pos, padding_mask, level_start_index, spatial_shapes)
                 channel_query = self.channel_attn(
-                    channel_query, # bz * num_feature_levels, 1, C
+                    channel_query, # bsz * num_feature_levels, 1, H*W
                     src_warped.flatten(0, 1).transpose(1, 2), # bsz * num_feature_levels, C, H*W
                     pos_warped.flatten(0, 1).transpose(1, 2)
                 )
-                # channel_query: (bz * num_feature_levels, 1, C)
 
         # ffn
         src = self.forward_ffn(src)
@@ -343,40 +349,15 @@ class DeformableTransformerEncoder(nn.Module):
 
     @staticmethod
     def get_reference_points(spatial_shapes, valid_ratios, device):
-        # spatial_shapes: (#lvl, 2), [(H_0, W_0), (H_1, W_1), (H_2, W_2), (H_3, W_3)], the feature shape in each level
-        # valid_ratios: (N, #lvl, 2), the real width & height ratio
-
         reference_points_list = []
         for lvl, (H_, W_) in enumerate(spatial_shapes):
-
-            ref_y, ref_x = torch.meshgrid(
-                torch.linspace(0.5, H_ - 0.5, H_, dtype=torch.float32, device=device),  # tensor([0.5, 1.5, ..., H_-0.5)
-                torch.linspace(0.5, W_ - 0.5, W_, dtype=torch.float32, device=device)   # tensor([0.5, 1.5, ..., W_-0.5)
-            )
-            # ref_y: (H_, W_), [[0.5, 0.5, ..., 0.5],
-            #                   [1.5, 1.5, ..., 1.5],
-            #                   ...,
-            #                   [83.5, 83.5, ..., 83.5]]
-            # ref_x: (H_, W_), [[0.5, 1.5, ..., 166.5],
-            #                   [0.5, 1.5, ..., 166.5],
-            #                   ...,
-            #                   [0.5, 1.5, ..., 166.5]]
+            ref_y, ref_x = torch.meshgrid(torch.linspace(0.5, H_ - 0.5, H_, dtype=torch.float32, device=device),
+                                          torch.linspace(0.5, W_ - 0.5, W_, dtype=torch.float32, device=device))
             ref_y = ref_y.reshape(-1)[None] / (valid_ratios[:, None, lvl, 1] * H_)
             ref_x = ref_x.reshape(-1)[None] / (valid_ratios[:, None, lvl, 0] * W_)
-            # ref_y.reshape(-1): (H_W_,)
-            # ref_y.reshape(-1)[None]: (1, H_W_)
-            # valid_ratios[:, None, lvl, 1]: (N, 1)
-            # ref_y: (N, H_W_), [[0.5/real_H, 0.5/real_H, ..., 0.5/real_H, 1.5/real_H, 1.5/real_H, ..., 1.5/real_H, ..., 83.5/real_H, 83.5/real_H, ..., 83.5/real_H],
-            #                    [0.5/real_H, 0.5/real_H, ..., 0.5/real_H, 1.5/real_H, 1.5/real_H, ..., 1.5/real_H, ..., 83.5/real_H, 83.5/real_H, ..., 83.5/real_H],
-            #                    ,,,
-            #                    [0.5/real_H, 0.5/real_H, ..., 0.5/real_H, 1.5/real_H, 1.5/real_H, ..., 1.5/real_H, ..., 83.5/real_H, 83.5/real_H, ..., 83.5/real_H]]
-            # ref_x: (N, H_W_), [[0.5/read_W, 1.5/read_W, ..., 166.5/read_W, 0.5/read_W, 1.5/read_W, ..., 166.5/read_W, ..., 0.5/read_W, 1.5/read_W, ..., 166.5/read_W],
-            #                    [0.5/read_W, 1.5/read_W, ..., 166.5/read_W, 0.5/read_W, 1.5/read_W, ..., 166.5/read_W, ..., 0.5/read_W, 1.5/read_W, ..., 166.5/read_W],
-            #                    ,,,
-            #                    [0.5/read_W, 1.5/read_W, ..., 166.5/read_W, 0.5/read_W, 1.5/read_W, ..., 166.5/read_W, ..., 0.5/read_W, 1.5/read_W, ..., 166.5/read_W]]
-            ref = torch.stack((ref_x, ref_y), -1)  # (N, H_W_, 2)
+            ref = torch.stack((ref_x, ref_y), -1)
             reference_points_list.append(ref)
-        reference_points = torch.cat(reference_points_list, 1)  # (N, #lvl, H_W_, 2)
+        reference_points = torch.cat(reference_points_list, 1)
         reference_points = reference_points[:, :, None] * valid_ratios[:, None]
         return reference_points
 
@@ -384,9 +365,9 @@ class DeformableTransformerEncoder(nn.Module):
         # src: (N, H_0W_0+...H_3W_3, C)
         # space_query: (N, 1, d_model)
         # channel_query: ?
-        # spatial_shapes: (#lvl, 2), [(H_0, W_0), (H_1, W_1), (H_2, W_2), (H_3, W_3)], the feature shape in each level
+        # spatial_shapes: (#lvl, 2), the feature shape in each level
         # level_start_index: tensor([0, H_0W_0=14028, H_0W_0+H_1W_1=17556, H_0W_0+H_1W_1+H_2W_2=18438])
-        # valid_ratios: (N, #lvl, 2), the real width & height ratio
+        # valid_ratios: ?
         # pos: (N, H_0W_0+...H_3W_3, C)
         # padding_mask: (N, H_0W_0+...H_3W_3)
 
@@ -398,8 +379,8 @@ class DeformableTransformerEncoder(nn.Module):
             output, space_query, channel_query = layer(
                 output, space_query, channel_query, pos, reference_points, spatial_shapes, level_start_index, padding_mask
             )
-            space_querys.append(space_query)  # collect all space queries from different layers
-            channel_querys.append(channel_query)  # collect all channel queries from different layers
+            space_querys.append(space_query)
+            channel_querys.append(channel_query)
 
         return output, space_querys, channel_querys
 
@@ -443,7 +424,10 @@ class DeformableTransformerDecoderLayer(nn.Module):
         tgt = self.norm3(tgt)
         return tgt
 
-    def forward(self, tgt, instance_query, query_pos, reference_points, src, src_spatial_shapes, level_start_index, src_padding_mask=None):
+    def forward(
+        self, tgt, instance_query, query_pos, reference_points, src, src_spatial_shapes, level_start_index, src_padding_mask=None,
+        src_prompt_embed=None, tgt_prompt_embed=None, data_domain_type='src+tgt', prompt_domain_type='same'
+    ):
         # tgt: (N, #query, d_model), object queries
         # instance_query: (N, 1, d_model)
         # query_pos: (N, #query, d_model)
@@ -452,12 +436,135 @@ class DeformableTransformerDecoderLayer(nn.Module):
         # src_spatial_shapes: (#lvl, 2), the feature shape in each level
         # level_start_index: tensor([0, H_0W_0=14028, H_0W_0+H_1W_1=17556, H_0W_0+H_1W_1+H_2W_2=18438])
         # src_padding_mask:
+        #
+        # xxx_prompt_embed:
+        #   (num_prompt_tokens, hidden_dim * 2)
+        #   None
 
-        # self attention
         q = k = self.with_pos_embed(tgt, query_pos)
-        tgt2 = self.self_attn(q.transpose(0, 1), k.transpose(0, 1), tgt.transpose(0, 1))[0].transpose(0, 1)  # (N, #query, d_model)
-        tgt = tgt + self.dropout2(tgt2)  # (N, #query, d_model)
-        tgt = self.norm2(tgt)  # (N, #query, d_model)
+        tgt2 = self.self_attn(q.transpose(0, 1), k.transpose(0, 1), tgt.transpose(0, 1))[0].transpose(0, 1)
+
+        # N, num_query, C = tgt.shape
+        # src_prompt_pos = tgt_prompt_pos = None
+        # num_prompt_tokens = 0
+        # if src_prompt_embed is not None:
+        #     src_prompt_embed, src_prompt_pos = torch.split(src_prompt_embed, C, dim=-1)
+        #     num_prompt_tokens = len(src_prompt_embed)
+        # if tgt_prompt_embed is not None:
+        #     tgt_prompt_embed, tgt_prompt_pos = torch.split(tgt_prompt_embed, C, dim=-1)
+        #     num_prompt_tokens = len(tgt_prompt_embed)
+        # # xxx_prompt_embed:
+        # #   (num_prompt_tokens, hidden_dim)
+        # #   None
+        # # xxx_prompt_pos:
+        # #   (num_prompt_tokens, hidden_dim)
+        # #   None
+
+        # if src_prompt_embed is None and tgt_prompt_embed is None:
+        #     # in the shallow mode, it means that this layer is not the first
+        #     assert len(src_prompt_embed) == len(tgt_prompt_embed), f'Expected the same number of prompts but got {len(src_prompt_embed)} src prompts and {len(tgt_prompt_embed)} tgt prompts'
+
+        #     q = k = self.with_pos_embed(tgt, query_pos)
+        #     tgt2 = self.self_attn(q.transpose(0, 1), k.transpose(0, 1), tgt.transpose(0, 1))[0].transpose(0, 1)
+        #     import pdb; pdb.set_trace()
+
+        # else:
+        #     # this layer is the first
+
+        #     # ↓↓↓ prepend prompts ↓↓↓
+        #     if prompt_domain_type == 'tgt_only':
+        #         assert src_prompt_embed is None
+
+        #         if data_domain_type == 'src+tgt':
+        #             # data is from the training set
+        #             # only apply prompt to the images from the target domain
+        #             assert N % 2 == 0
+        #             src_tgt, tgt_tgt = torch.split(tgt, N // 2, dim=0)  # (N//2, #query, d_model)
+        #             src_pos, tgt_pos = torch.split(query_pos, N // 2, dim=0)  # (N//2, #query, d_model)
+
+        #             src_q = src_k = self.with_pos_embed(src_tgt, src_pos)  # (N//2, #query, d_model)
+        #             src_tgt2 = self.self_attn(src_q.transpose(0, 1), src_k.transpose(0, 1), src_tgt.transpose(0, 1))[0].transpose(0, 1)  # (N//2, #query, d_model)
+
+        #             tgt_q = tgt_k = self.with_pos_embed(tgt_tgt, tgt_pos)  # (N//2, #query, d_model)
+        #             tgt_q = prepend_prompt_to_tgt(tgt_q, None, self.with_pos_embed(tgt_prompt_embed), tgt_prompt_pos)  # (N//2, #query + num_prompt_tokens, d_model)
+        #             tgt_k = prepend_prompt_to_tgt(tgt_k, None, self.with_pos_embed(tgt_prompt_embed, tgt_prompt_pos))  # (N//2, #query + num_prompt_tokens, d_model)
+        #             tgt_v = prepend_prompt_to_tgt(tgt_tgt, None, self.with_pos_embed(tgt_prompt_embed, None))  # (N//2, #query + num_prompt_tokens, d_model)
+        #             tgt_tgt2 = self.self_attn(tgt_q.transpose(0, 1), tgt_k.transpose(0, 1), tgt_v.transpose(0, 1))[0].transpose(0, 1)  # (N//2, #query + num_prompt_tokens, d_model)
+
+        #             tgt2 = torch.cat([src_tgt2, tgt_tgt2], dim=0)  # (N, #query + num_prompt_tokens, d_model)
+        #             import pdb; pdb.set_trace()
+
+        #         elif data_domain_type == 'src_only':
+        #             # data is from the source validation set
+        #             # nothing is changed
+        #             q = k = self.with_pos_embed(tgt, query_pos)
+        #             tgt2 = self.self_attn(q.transpose(0, 1), k.transpose(0, 1), tgt.transpose(0, 1))[0].transpose(0, 1)
+        #             # import pdb; pdb.set_trace()  # checked!
+
+        #         elif data_domain_type == 'tgt_only':
+        #             # data is from the target validation set
+        #             q = k = self.with_pos_embed(tgt, query_pos)  # (N, #query, d_model)
+        #             q = prepend_prompt_to_tgt(q, None, self.with_pos_embed(tgt_prompt_embed, tgt_prompt_pos))  # (N, #query + num_prompt_tokens, d_model)
+        #             k = prepend_prompt_to_tgt(k, None, self.with_pos_embed(tgt_prompt_embed, tgt_prompt_pos))  # (N, #query + num_prompt_tokens, d_model)
+        #             v = prepend_prompt_to_tgt(tgt, None, self.with_pos_embed(tgt_prompt_embed, None))  # (N, #query + num_prompt_tokens, d_model)
+        #             tgt2 = self.self_attn(q.transpose(0, 1), k.transpose(0, 1), v.transpose(0, 1))[0].transpose(0, 1)  # (N, #query + num_prompt_tokens, d_model)
+        #             import pdb; pdb.set_trace()
+                
+        #     else:
+        #         # `prompt_domain_type` is one of 'same', 'separate', or 'inverse'
+        #         assert src_prompt_embed is not None
+
+        #         if data_domain_type == 'src+tgt':
+        #             # data is from the training set
+        #             # apply prompt to the images from the both domains
+        #             assert N % 2 == 0
+        #             src_tgt, tgt_tgt = torch.split(tgt, N // 2, dim=0)  # (N//2, #query, d_model)
+        #             src_pos, tgt_pos = torch.split(query_pos, N // 2, dim=0)  # (N//2, #query, d_model)
+
+        #             src_q = src_k = self.with_pos_embed(src_tgt, src_pos)  # (N//2, #query, d_model)
+        #             src_q = prepend_prompt_to_tgt(src_q, self.with_pos_embed(src_prompt_embed, src_prompt_pos), None)  # (N//2, #query + num_prompt_tokens, d_model)
+        #             src_k = prepend_prompt_to_tgt(src_k, self.with_pos_embed(src_prompt_embed, src_prompt_pos), None)  # (N//2, #query + num_prompt_tokens, d_model)
+        #             src_v = prepend_prompt_to_tgt(src_tgt, src_prompt_embed, None)  # (N//2, #query + num_prompt_tokens, d_model)
+        #             src_tgt2 = self.self_attn(src_q.transpose(0, 1), src_k.transpose(0, 1), src_v.transpose(0, 1))[0].transpose(0, 1)  # (N//2, #query + num_prompt_tokens, d_model)
+
+        #             tgt_q = tgt_k = self.with_pos_embed(tgt_tgt, tgt_pos)  # (N//2, #query, d_model)
+        #             tgt_q = prepend_prompt_to_tgt(tgt_q, None, self.with_pos_embed(tgt_prompt_embed, tgt_prompt_pos))  # (N//2, #query + num_prompt_tokens, d_model)
+        #             tgt_k = prepend_prompt_to_tgt(tgt_k, None, self.with_pos_embed(tgt_prompt_embed, tgt_prompt_pos))  # (N//2, #query + num_prompt_tokens, d_model)
+        #             tgt_v = prepend_prompt_to_tgt(tgt_tgt, None, self.with_pos_embed(tgt_prompt_embed, None))  # (N//2, #query + num_prompt_tokens, d_model)
+        #             tgt_tgt2 = self.self_attn(tgt_q.transpose(0, 1), tgt_k.transpose(0, 1), tgt_v.transpose(0, 1))[0].transpose(0, 1)  # (N//2, #query + num_prompt_tokens, d_model)
+
+        #             tgt2 = torch.cat([src_tgt2, tgt_tgt2], dim=0)  # (N, #query + num_prompt_tokens, d_model)
+        #             import pdb; pdb.set_trace()
+
+        #         elif data_domain_type == 'src_only':
+        #             # data is from the source validation set
+        #             tgt = prepend_prompt_to_tgt(tgt, src_prompt_embed)  # (N, #query + num_prompt_tokens, d_model)
+        #             query_pos = prepend_prompt_to_tgt(query_pos, src_prompt_pos)  # (N, #query + num_prompt_tokens, d_model)
+
+        #             q = k = self.with_pos_embed(tgt, query_pos)  # (N, #query, d_model)
+        #             # q = prepend_prompt_to_tgt(q, self.with_pos_embed(src_prompt_embed, src_prompt_pos), None)  # (N, #query + num_prompt_tokens, d_model)
+        #             # k = prepend_prompt_to_tgt(k, self.with_pos_embed(src_prompt_embed, src_prompt_pos), None)  # (N, #query + num_prompt_tokens, d_model)
+        #             # v = prepend_prompt_to_tgt(tgt, self.with_pos_embed(src_prompt_embed, None), None)  # (N, #query + num_prompt_tokens, d_model)
+        #             v = tgt
+        #             tgt2 = self.self_attn(q.transpose(0, 1), k.transpose(0, 1), v.transpose(0, 1))[0].transpose(0, 1)  # (N, #query + num_prompt_tokens, d_model)
+        #             import pdb; pdb.set_trace()  # checked!
+
+        #         elif data_domain_type == 'tgt_only':
+        #             # data is from the target validation set
+        #             q = k = self.with_pos_embed(tgt, query_pos)  # (N, #query, d_model)
+        #             q = prepend_prompt_to_tgt(q, None, self.with_pos_embed(tgt_prompt_embed, tgt_prompt_pos))  # (N, #query + num_prompt_tokens, d_model)
+        #             k = prepend_prompt_to_tgt(k, None, self.with_pos_embed(tgt_prompt_embed, tgt_prompt_pos))  # (N, #query + num_prompt_tokens, d_model)
+        #             v = prepend_prompt_to_tgt(tgt, None, self.with_pos_embed(tgt_prompt_embed, None))  # (N, #query + num_prompt_tokens, d_model)
+        #             tgt2 = self.self_attn(q.transpose(0, 1), k.transpose(0, 1), v.transpose(0, 1))[0].transpose(0, 1)  # (N, #query + num_prompt_tokens, d_model)
+        #             # import pdb; pdb.set_trace()  # checked!
+
+        # assert tgt2.shape[0] == N
+        # assert tgt2.shape[1] == num_query + num_prompt_tokens
+        # assert tgt2.shape[2] == C
+        # # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
+
+        tgt = tgt + self.dropout2(tgt2)
+        tgt = self.norm2(tgt)
 
         # cross attention
         tgt2 = self.cross_attn(self.with_pos_embed(tgt, query_pos),
@@ -467,7 +574,7 @@ class DeformableTransformerDecoderLayer(nn.Module):
         tgt = self.norm1(tgt)
 
         if self.training and self.instance_align:
-            instance_query = self.instance_attn(instance_query, tgt, query_pos)  # (N, 1, d_model)
+            instance_query = self.instance_attn(instance_query, tgt, query_pos)
 
         # ffn
         tgt = self.forward_ffn(tgt)
@@ -476,18 +583,22 @@ class DeformableTransformerDecoderLayer(nn.Module):
 
 
 class DeformableTransformerDecoder(nn.Module):
-    def __init__(self, decoder_layer, num_layers, return_intermediate=False):
+    def __init__(self, decoder_layer, num_layers, return_intermediate=False, deep_prompt=True, deep_shared=False):
         super().__init__()
         self.layers = _get_clones(decoder_layer, num_layers)
         self.num_layers = num_layers
         self.return_intermediate = return_intermediate
+        self.deep_prompt = deep_prompt
+        self.deep_shared = deep_shared
         # hack implementation for iterative bounding box refinement and two-stage Deformable DETR
         self.bbox_embed = None
         self.class_embed = None
 
-    def forward(self, tgt, instance_query, reference_points, src, src_spatial_shapes, src_level_start_index, src_valid_ratios,
-                query_pos=None, src_padding_mask=None):
-                # tgt: (N, #query, d_model), object queries
+    def forward(
+        self, tgt, instance_query, reference_points, src, src_spatial_shapes, src_level_start_index, src_valid_ratios,
+        query_pos=None, src_padding_mask=None
+    ):
+        # tgt: (N, #query, d_model), object queries
         # instance_query: (N, 1, d_model)
         # reference_points: (N, #query, 2), initially predicted reference point coordinates by the small network `DeformableTransformer.reference_points`
         # src: (N, H_0W_0+...H_3W_3, C), `memory` from encoder, transformed feature map
@@ -503,20 +614,15 @@ class DeformableTransformerDecoder(nn.Module):
         intermediate_reference_points = []
         for lid, layer in enumerate(self.layers):
             if reference_points.shape[-1] == 4:
-                # two-stage
                 reference_points_input = reference_points[:, :, None] \
                                          * torch.cat([src_valid_ratios, src_valid_ratios], -1)[:, None]
             else:
-                # one-stage
                 assert reference_points.shape[-1] == 2
                 reference_points_input = reference_points[:, :, None] * src_valid_ratios[:, None]
-                # reference_points[:, :, None]: (N, #query, 1, 2)
-                # src_valid_ratios[:, None]: (2, 1, 4, 2)
+
             output, instance_query = layer(
                 output, instance_query, query_pos, reference_points_input, src, src_spatial_shapes, src_level_start_index, src_padding_mask
             )
-            # output: (N, #query, d_model)
-            # instance_query: (N, 1, d_model)
 
             # hack implementation for iterative bounding box refinement
             if self.bbox_embed is not None:
@@ -529,13 +635,13 @@ class DeformableTransformerDecoder(nn.Module):
                     new_reference_points = tmp
                     new_reference_points[..., :2] = tmp[..., :2] + inverse_sigmoid(reference_points)
                     new_reference_points = new_reference_points.sigmoid()
-                reference_points = new_reference_points.detach()  # updated `reference_points`
+                reference_points = new_reference_points.detach()
 
-            if self.return_intermediate:  # always True, see #L609
+            if self.return_intermediate:
                 intermediate.append(output)
                 intermediate_reference_points.append(reference_points)
 
-        if self.return_intermediate:  # always True, see #L609
+        if self.return_intermediate:
             return torch.stack(intermediate), torch.stack(intermediate_reference_points), instance_query
 
         # https://github.com/fundamentalvision/Deformable-DETR/issues/43
@@ -558,16 +664,20 @@ def _get_activation_fn(activation):
 
 
 def build_deforamble_transformer(cfg):
+    assert cfg.MODEL.VISUAL_PROMPT.SWITCH
+    assert cfg.MODEL.VISUAL_PROMPT.LOCATION == 'prepend'
+    assert not cfg.MODEL.VISUAL_PROMPT.DEEP
+
     return DeformableTransformer(
-        d_model=cfg.MODEL.HIDDEN_DIM,  # 256
-        nhead=cfg.MODEL.NHEADS,  # 8
-        num_encoder_layers=cfg.MODEL.ENC_LAYERS,  # 6
-        num_decoder_layers=cfg.MODEL.DEC_LAYERS,  # 6
-        dim_feedforward=cfg.MODEL.DIM_FEEDFORWARD,  # 1024
+        d_model=cfg.MODEL.HIDDEN_DIM,
+        nhead=cfg.MODEL.NHEADS,
+        num_encoder_layers=cfg.MODEL.ENC_LAYERS,
+        num_decoder_layers=cfg.MODEL.DEC_LAYERS,
+        dim_feedforward=cfg.MODEL.DIM_FEEDFORWARD,
         dropout=cfg.MODEL.DROPOUT,
         activation="relu",
         return_intermediate_dec=True,
-        num_feature_levels=cfg.MODEL.NUM_FEATURE_LEVELS,  # 4
+        num_feature_levels=cfg.MODEL.NUM_FEATURE_LEVELS,
         dec_n_points=cfg.MODEL.DEC_N_POINTS,
         enc_n_points=cfg.MODEL.ENC_N_POINTS,
         two_stage=cfg.MODEL.TWO_STAGE,

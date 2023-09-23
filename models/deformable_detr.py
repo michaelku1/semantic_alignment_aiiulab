@@ -158,13 +158,39 @@ class DeformableDETR(nn.Module):
         """
         if not isinstance(samples, NestedTensor):
             samples = nested_tensor_from_tensor_list(samples)
-        features, pos = self.backbone(samples)
+        # samples.tensors: (N, C, H, W)
+        # samples.mask: (N ,H, W)
+
+        features, pos = self.backbone(samples)  # features size are different
+        """
+        If cfg.MODEL.NUM_FEATURE_LEVELS == 1, then
+            len(features) == 1
+            self.backbone.strides = [32]
+            self.backbone.num_channels = [2048]
+        
+        If cfg.MODEL.NUM_FEATURE_LEVELS > 1, then
+            len(features) == 3
+            self.backbone.strides = [8, 16, 32]
+            self.backbone.num_channels = [512, 1024, 2048]
+        """
+        # If cfg.MODEL.NUM_FEATURE_LEVELS == 4
+        #     features: [nested_tensor_0, nested_tensor_1, nested_tensor_2]
+        #         features[0].tensors: (2,  512, 84, 167)
+        #         features[1].tensors: (2, 1024, 42,  84)
+        #         features[2].tensors: (2, 2048, 21,  42)
+        #     pos: [pos_emb_tensor_0, pos_emb_tensor_1, pos_emb_tensor_2]
+        #         pos[0]: (2, 256, 84, 167)
+        #         pos[1]: (2, 256, 42,  84)
+        #         pos[2]: (2, 256, 21,  42)
 
         srcs = []
         masks = []
-        for l, feat in enumerate(features):
+        for l, feat in enumerate(features):  # different layer features
             src, mask = feat.decompose()
-            srcs.append(self.input_proj[l](src))
+            srcs.append(self.input_proj[l](src))  # feat after linear_proj (channel → 256)
+            # srcs[0]: (2, 256, 84, 167)
+            # srcs[1]: (2, 256, 42,  84)
+            # srcs[2]: (2, 256, 21,  42)
             masks.append(mask)
             assert mask is not None
         if self.num_feature_levels > len(srcs):
@@ -178,13 +204,33 @@ class DeformableDETR(nn.Module):
                 mask = F.interpolate(m[None].float(), size=src.shape[-2:]).to(torch.bool)[0]
                 pos_l = self.backbone[1](NestedTensor(src, mask)).to(src.dtype)
                 srcs.append(src)
+                # srcs[0]: (2, 256, 84, 167)
+                # srcs[1]: (2, 256, 42,  84)
+                # srcs[2]: (2, 256, 21,  42)
+                # srcs[3]: (2, 256, 11,  21)
                 masks.append(mask)
+                # masks[0]: (2, 84, 167)
+                # masks[1]: (2, 42,  84)
+                # masks[2]: (2, 21,  42)
+                # masks[3]: (2, 11,  21)
                 pos.append(pos_l)
+                # pos[0]: (2, 256, 84, 167)
+                # pos[1]: (2, 256, 42,  84)
+                # pos[2]: (2, 256, 21,  42)
+                # pos[3]: (2, 256, 11,  21)
 
         query_embeds = None
         if not self.two_stage:
             query_embeds = self.query_embed.weight
         hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output = self.transformer(srcs, masks, pos, query_embeds)
+        # hs: (#decoder_layer, N, #query, d_model), object query tensor outputed from decoder
+        # init_reference: (N, #query, 2), initially predicted reference point coordinates by the small network `DeformableTransformer.reference_points`
+        # inter_references: (#decoder_layer, N, #query, 4), predicted box coordinates from decoder
+        # da_output: {
+        #     'space_query': (N, #encoder_layers, d_model),
+        #     'channel_query': (N * num_feature_levels, #encoder_layers, d_model),
+        #     'instance_query': (N, 1, d_model)
+        # }
 
         outputs_classes = []
         outputs_coords = []

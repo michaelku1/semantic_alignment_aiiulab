@@ -39,7 +39,6 @@ _C.TRAIN.LR_DROP_EPOCHS = None
 _C.TRAIN.CLIP_MAX_NORM = 0.1 # gradient clipping max norm
 _C.TRAIN.SGD = False # AdamW is used when setting this false
 
-
 # ------------------------------------------------------------------------
 # Model
 # ------------------------------------------------------------------------
@@ -94,6 +93,11 @@ _C.MODEL.VISUAL_PROMPT.INIT_A = -0.1
 _C.MODEL.VISUAL_PROMPT.INIT_B = 0.1
 _C.MODEL.VISUAL_PROMPT.DOMAIN_TYPE = 'same'  # one of 'same', 'separate', 'inverse', 'tgt_only'
 
+# * Cross domain (William)
+_C.MODEL.CROSS_DOMAIN = CN()
+_C.MODEL.CROSS_DOMAIN.SWITCH = False
+_C.MODEL.CROSS_DOMAIN.CROSS_DOMAIN_LABEL = 0
+
 # ------------------------------------------------------------------------
 # Loss
 # ------------------------------------------------------------------------
@@ -128,6 +132,20 @@ _C.DATASET.DATASET_FILE = 'cityscapes_to_foggy_cityscapes'
 _C.DATASET.COCO_PATH = '../datasets'
 _C.DATASET.COCO_PANOPTIC_PATH = None
 _C.DATASET.REMOVE_DIFFICULT = False
+_C.DATASET.CATEGORY_IDS = [1, 2, 3, 4, 5, 6, 7, 8]
+
+_C.DATASET.TO_TENSOR_FIRST = False
+
+_C.DATASET.MIXUP = CN()
+_C.DATASET.MIXUP.SWITCH = False
+_C.DATASET.MIXUP.MIXUP_SRC_INT_IMGS = False
+_C.DATASET.MIXUP.MIXUP_SRC_INT_DOMAIN_LABELS = False
+_C.DATASET.MIXUP.MIXUP_SRC_TGT_IMGS = False
+_C.DATASET.MIXUP.MIXUP_SRC_TGT_DOMAIN_LABELS = False
+_C.DATASET.MIXUP.INT_DOMAIN_LABEL = 0
+_C.DATASET.MIXUP.ALPHA = 5.0
+_C.DATASET.MIXUP.BETA = 1.0
+_C.DATASET.MIXUP.MIN_DELTA = 0.0
 
 # ------------------------------------------------------------------------
 # Distributed
@@ -159,10 +177,11 @@ _C.FINETUNE = False
 # Plot box
 # ------------------------------------------------------------------------
 _C.PLOT = CN()
+_C.PLOT.PLOT_GT_BBOX = False
 _C.PLOT.PLOT_BBOX = False
 _C.PLOT.PLOT_MAP = False
 _C.PLOT.SCORE_THRESHOLD = 0.5
-_C.PLOT.IMG_IDS  = []
+_C.PLOT.IMG_IDS = []
 
 
 def get_cfg_defaults():

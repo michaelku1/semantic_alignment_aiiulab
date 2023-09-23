@@ -380,43 +380,46 @@ def cityscapes_to_coco(
 
 
 if __name__ == "__main__":
-    sim10k_to_coco(
-        src_path="VOC2012/Annotations",
-        des_path="annotations/sim10k_caronly.json"
+    # sim10k_to_coco(
+    #     src_path="../datasets/sim10k/VOC2012/Annotations",
+    #     des_path="../datasets/sim10k/annotations/sim10k_caronly.json"
+    # )
+    bdd100k_daytime_to_coco(
+        # src_path="labels/bdd100k_labels_images_train.json",
+        src_path="../datasets/bdd/bdd100k/labels/bdd100k_labels_images_train.json",
+        des_path="../datasets/bdd_daytime/annotations/bdd_daytime_train.json",
+        # categories=("person", "rider", "car", "truck", "bus", "motor", "bike")
     )
     bdd100k_daytime_to_coco(
-        src_path="labels/bdd100k_labels_images_train.json",
-        des_path="annotations/bdd_daytime_train.json"
+        src_path="../datasets/bdd/bdd100k/labels/bdd100k_labels_images_val.json",
+        des_path="../datasets/bdd_daytime/annotations/bdd_daytime_val.json",
+        # categories=("person", "rider", "car", "truck", "bus", "motor", "bike")
     )
-    bdd100k_daytime_to_coco(
-        src_path="labels/bdd100k_labels_images_val.json",
-        des_path="annotations/bdd_daytime_val.json"
-    )
-    cityscapes_to_coco(
-        src_path="gtFine/train",
-        des_path="annotations/cityscapes_train.json",
-    )
-    cityscapes_to_coco(
-        src_path="gtFine/val",
-        des_path="annotations/cityscapes_val.json",
-    )
-    cityscapes_to_coco(
-        src_path="gtFine/train",
-        des_path="annotations/cityscapes_caronly_train.json",
-        car_only=True,
-    )
-    cityscapes_to_coco(
-        src_path="gtFine/val",
-        des_path="annotations/cityscapes_caronly_val.json",
-        car_only=True,
-    )
-    cityscapes_to_coco(
-        src_path="gtFine/train",
-        des_path="annotations/foggy_cityscapes_train.json",
-        foggy=True,
-    )
-    cityscapes_to_coco(
-        src_path="gtFine/val",
-        des_path="annotations/foggy_cityscapes_val.json",
-        foggy=True,
-    )
+    # cityscapes_to_coco(
+    #     src_path="gtFine/train",
+    #     des_path="annotations/cityscapes_train.json",
+    # )
+    # cityscapes_to_coco(
+    #     src_path="gtFine/val",
+    #     des_path="annotations/cityscapes_val.json",
+    # )
+    # cityscapes_to_coco(
+    #     src_path="../datasets/cityscapes/gtFine/train",
+    #     des_path="../datasets/cityscapes/annotations/cityscapes_caronly_train.json",
+    #     car_only=True,
+    # )
+    # cityscapes_to_coco(
+    #     src_path="../datasets/cityscapes/gtFine/val",
+    #     des_path="../datasets/cityscapes/annotations/cityscapes_caronly_val.json",
+    #     car_only=True,
+    # )
+    # cityscapes_to_coco(
+    #     src_path="gtFine/train",
+    #     des_path="annotations/foggy_cityscapes_train.json",
+    #     foggy=True,
+    # )
+    # cityscapes_to_coco(
+    #     src_path="gtFine/val",
+    #     des_path="annotations/foggy_cityscapes_val.json",
+    #     foggy=True,
+    # )

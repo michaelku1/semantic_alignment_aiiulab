@@ -95,15 +95,24 @@ class MSDeformAttn(nn.Module):
         if input_padding_mask is not None:
             value = value.masked_fill(input_padding_mask[..., None], float(0))
         value = value.view(N, Len_in, self.n_heads, self.d_model // self.n_heads)
-        sampling_offsets = self.sampling_offsets(query).view(N, Len_q, self.n_heads, self.n_levels, self.n_points, 2)
-        attention_weights = self.attention_weights(query).view(N, Len_q, self.n_heads, self.n_levels * self.n_points)
-        attention_weights = F.softmax(attention_weights, -1).view(N, Len_q, self.n_heads, self.n_levels, self.n_points)
-        # N, Len_q, n_heads, n_levels, n_points, 2
+        sampling_offsets = self.sampling_offsets(query).view(N, Len_q, self.n_heads, self.n_levels, self.n_points, 2)  # (N, Length_{query}, n_heads, n_levels, n_samples, 2)
+        attention_weights = self.attention_weights(query).view(N, Len_q, self.n_heads, self.n_levels * self.n_points)  # (N, Length_{query}, n_heads * n_levels, n_samples)
+        attention_weights = F.softmax(attention_weights, -1).view(N, Len_q, self.n_heads, self.n_levels, self.n_points)  # (N, Length_{query}, n_heads, n_levels, n_samples)
+        
         if reference_points.shape[-1] == 2:
+            # one-stage
+            # swap (H, W) into (W, H)
             offset_normalizer = torch.stack([input_spatial_shapes[..., 1], input_spatial_shapes[..., 0]], -1)
+            # (n_levels, 2), [(W_0, H_0), (W_1, H_1), ..., (W_{L-1}, H_{L-1})]
             sampling_locations = reference_points[:, :, None, :, None, :] \
                                  + sampling_offsets / offset_normalizer[None, None, None, :, None, :]
+            # reference_points[:, :, None, :, None, :]: (N, Length_{query}, 1, #lvl, 1, 2)
+            # sampling_offsets: (N, Length_{query}, n_heads, n_levels, n_samples, 2)
+            # offset_normalizer[None, None, None, :, None, :]: (1, 1, 1, n_levels, 1, 2)
+            # sampling_locations: (N, Length_{query}, n_heads, n_levels, n_samples, 2)
+
         elif reference_points.shape[-1] == 4:
+            # two-stage
             sampling_locations = reference_points[:, :, None, :, None, :2] \
                                  + sampling_offsets / self.n_points * reference_points[:, :, None, :, None, 2:] * 0.5
         else:

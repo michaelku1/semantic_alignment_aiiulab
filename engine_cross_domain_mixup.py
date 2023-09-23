@@ -20,7 +20,8 @@ from typing import Iterable
 import torch
 import torch.nn as nn
 import util.misc as utils
-from models.utils import DomainAttention
+from models.utils import DomainAttention, compute_delta
+import datasets.DAOD as DAOD
 from datasets.coco_eval import CocoEvaluator
 from datasets.panoptic_eval import PanopticEvaluator
 from datasets.data_prefetcher import data_prefetcher
@@ -31,61 +32,26 @@ from PIL import Image
 import numpy as np
 from pathlib import Path
 
+def mixup_imgs(img_1, img_2, mixup_ratio):
+    return (1 - mixup_ratio) * img_1 + mixup_ratio * img_2
+
+def mixup_domain_labels(label_1, label_2, mixup_ratio):
+    return (1 - mixup_ratio) * label_1 + mixup_ratio * label_2
+
 def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int,
                     postprocessors, cfg=None, **kwargs):
+
+    assert cfg.DATASET.MIXUP.SWITCH
+    
     model.train()
-    if cfg.MODEL.VISUAL_PROMPT.SWITCH:
-        # set model in evaluation (inference) mode
-        # because `DeformableDETR` has group norm layers and
-        # `DeformableTransformer` has dropout and layer norm layers
-        for layers in model.module.input_proj:
-            for l in layers:
-                if isinstance(l, nn.GroupNorm):
-                    l.eval()
-        for encoder_layer in model.module.transformer.encoder.layers:
-            encoder_layer.dropout1.eval()
-            encoder_layer.dropout2.eval()
-            encoder_layer.dropout3.eval()
-            encoder_layer.norm1.eval()
-            encoder_layer.norm2.eval()
-
-            if hasattr(encoder_layer, 'space_attn'):
-                for m in encoder_layer.space_attn.modules():
-                    if isinstance(m, (nn.LayerNorm, nn.Dropout, nn.MultiheadAttention)):
-                        m.eval()
-            if hasattr(encoder_layer, 'channel_attn'):
-                for m in encoder_layer.channel_attn.modules():
-                    if isinstance(m, (nn.LayerNorm, nn.Dropout, nn.MultiheadAttention)):
-                        m.eval()
-        for decoder_layer in model.module.transformer.decoder.layers:
-            decoder_layer.self_attn.eval()
-            decoder_layer.dropout1.eval()
-            decoder_layer.dropout2.eval()
-            decoder_layer.dropout3.eval()
-            decoder_layer.dropout4.eval()
-            decoder_layer.norm1.eval()
-            decoder_layer.norm2.eval()
-            decoder_layer.norm3.eval()
-
-            if hasattr(decoder_layer, 'instance_attn'):
-                for m in decoder_layer.instance_attn.modules():
-                    if isinstance(m, (nn.LayerNorm, nn.Dropout, nn.MultiheadAttention)):
-                        m.eval()
-            
     criterion.train()
     metric_logger = utils.MetricLogger(delimiter="  ")
     metric_logger.add_meter('class_error', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
     metric_logger.add_meter('grad_norm', utils.SmoothedValue(window_size=1, fmt='{value:.2f}'))
-    if hasattr(cfg.MODEL, 'VISUAL_PROMPT') and cfg.MODEL.VISUAL_PROMPT.SWITCH:
-        metric_logger.add_meter('lr_head', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
-        metric_logger.add_meter('lr_prompt', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
-        metric_logger.add_meter('min_prompt_norm', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
-        metric_logger.add_meter('max_prompt_norm', utils.SmoothedValue(window_size=1, fmt='{value:.6f}')) 
-        metric_logger.add_meter('prompt_grad_norm', utils.SmoothedValue(window_size=1, fmt='{value:.10f}'))
-    else:
-        metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
+    metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
+    metric_logger.add_meter('delta', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 1
     
@@ -93,27 +59,46 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
     samples, targets = prefetcher.next()  # samples have been transformed at this stage
 
     data_loader_len = len(data_loader)
-    data_domain_type = getattr(data_loader.dataset, 'data_domain_type', 'src+tgt')
-    
-    # for samples, targets in metric_logger.log_every(data_loader, print_freq, header):
-    ### value on the left is current and value on the right is smoothed value
-    thresh_record = []
-    missing_source = 0
+
+    delta = 0
+    current_iters = epoch * data_loader_len
+    total_iters = cfg.TRAIN.EPOCHS * data_loader_len  # 148750
     for iter_i in metric_logger.log_every(range(data_loader_len), print_freq, header):
         # for debug
-        # if iter_i == 10:
-        #     break
+        # if epoch == 49 and iter_i % 1000 == 0:
+        #     import pdb; pdb.set_trace()
 
-        # BUG counting number of missing source targets
-        for t in targets:
-            if t['labels'].nelement() == 0:
-                missing_source += 1
-                continue
+        current_iters += 1
+        delta = compute_delta(current_iters, total_iters, alpha=cfg.DATASET.MIXUP.ALPHA, beta=cfg.DATASET.MIXUP.BETA, min_delta=cfg.DATASET.MIXUP.MIN_DELTA)
 
-        # DEBUG for nan grad
+        src_img, int_img, tgt_img = samples.tensors
+        src_target, tgt_target = targets
+        if cfg.DATASET.MIXUP.MIXUP_SRC_INT_IMGS:
+            print('=== mixup src & int images ===')
+            int_img = mixup_imgs(src_img, int_img, mixup_ratio=delta)
+            int_img, src_target = data_loader.dataset.transform(int_img, src_target)
+        if cfg.DATASET.MIXUP.MIXUP_SRC_TGT_IMGS:
+            print('=== mixup src & tgt images ===')
+            tgt_img = mixup_imgs(src_img, tgt_img, mixup_ratio=delta)
+            tgt_img, tgt_target = data_loader.dataset.transform(tgt_img, tgt_target)
+        samples = utils.nested_tensor_from_tensor_list([int_img, tgt_img])
+        targets = [src_target, tgt_target]
+
+        domain_labels = [0, 1]
+        if cfg.DATASET.MIXUP.MIXUP_SRC_INT_DOMAIN_LABELS:
+            int_domain_label = cfg.DATASET.MIXUP.INT_DOMAIN_LABEL
+            if int_domain_label == 0:
+                raise ValueError('The int domain label can not be the same with the src domain label')
+            domain_labels[0] = mixup_domain_labels(0, int_domain_label, delta)
+            print('=== mixup src & int domain labels ===')
+        if cfg.DATASET.MIXUP.MIXUP_SRC_TGT_DOMAIN_LABELS:
+            domain_labels[1] = mixup_domain_labels(0, 1, delta)
+            print('=== mixup src & tgt domain labels ===')
+
+        # # DEBUG for nan grad
         # with torch.autograd.detect_anomaly():
-        outputs = model(samples, data_domain_type=data_domain_type)
-        loss_dict = criterion(outputs, targets)
+        outputs = model(samples)
+        loss_dict = criterion(outputs, targets[:2], domain_labels)
         weight_dict = criterion.weight_dict
 
         # the loss used for optimization
@@ -152,26 +137,8 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
         metric_logger.update(loss=loss_value, **loss_dict_reduced_scaled, **loss_dict_reduced_unscaled)
         metric_logger.update(class_error=loss_dict_reduced['class_error'])
         metric_logger.update(grad_norm=grad_total_norm)
-
-        # in visual prompt tuning
-        if hasattr(cfg.MODEL, 'VISUAL_PROMPT') and cfg.MODEL.VISUAL_PROMPT.SWITCH:
-            prompt_parameters = [p for n, p in model.named_parameters() if 'prompt_embeddings' in n]
-            prompt_norms = [torch.norm(p, dim=-1) for p in prompt_parameters]
-            min_prompt_norm = min([torch.min(n).item() for n in prompt_norms])
-            max_prompt_norm = max([torch.max(n).item() for n in prompt_norms])
-
-            metric_logger.update(lr_head=optimizer.param_groups[0]['lr'])
-            metric_logger.update(lr_prompt=optimizer.param_groups[1]['lr'])
-            metric_logger.update(min_prompt_norm=min_prompt_norm)
-            metric_logger.update(max_prompt_norm=max_prompt_norm)
-
-            if optimizer.param_groups[-1]['params']:
-                prompt_grad_norm = utils.get_total_grad_norm(optimizer.param_groups[-1]['params'])
-                metric_logger.update(prompt_grad_norm=prompt_grad_norm)
-            else:
-                metric_logger.update(prompt_grad_norm=0)
-        else:
-            metric_logger.update(lr=optimizer.param_groups[0]['lr'])
+        metric_logger.update(lr=optimizer.param_groups[0]['lr'])
+        metric_logger.update(delta=delta)
 
         # ↓↓↓ plot pseudo boxes ↓↓↓
         if cfg.PLOT.PLOT_BBOX and 'tgt_pred_logits' in outputs:
@@ -198,26 +165,7 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             )
         # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
 
-        # ↓↓↓ plot proposal score map ↓↓↓
-        if cfg.PLOT.PLOT_MAP and 'tgt_map_out' in outputs:
-            B = len(targets)
-            tgt_targets = targets[B//2:]
-            tgt_tensors = samples.tensors[B//2:]
-            tgt_tensors = {target['image_id'].item(): output for target, output in zip(tgt_targets, tgt_tensors)}
-
-            plot_tgt_map(
-                tgt_tensors=tgt_tensors,
-                tgt_res=outputs['tgt_map_out'],
-                coco=data_loader.dataset.target.coco,
-                map_save_dir=Path(cfg.OUTPUT_DIR) / 'plot_map',
-                img_ids=cfg.PLOT.IMG_IDS,
-                prefix=kwargs['prefix']
-            )
-        # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
-
         samples, targets = prefetcher.next()
-    
-    print('missing_source:', missing_source)
     
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
@@ -244,7 +192,7 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, cfg
     coco_evaluators_per_class = {}
     for cat_id in base_ds.getCatIds():
         if 'category_ids' in kwargs:
-            if cat_id not in cfg.DATASET.CATEGORY_IDS:
+            if cat_id not in kwargs['category_ids']:
                 continue
         evaluator = CocoEvaluator(base_ds, iou_types)
         for iou_type in iou_types:
@@ -260,13 +208,11 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, cfg
             output_dir=os.path.join(cfg.OUTPUT_DIR, "panoptic_eval"),
         )
 
-    data_domain_type = getattr(data_loader.dataset, 'data_domain_type', 'src+tgt')
-
     for samples, targets in metric_logger.log_every(data_loader, 10, header):
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
         
-        outputs = model(samples, data_domain_type=data_domain_type)
+        outputs = model(samples)
         loss_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict
 
@@ -318,21 +264,6 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, cfg
             )
         # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
 
-        # ↓↓↓ plot proposal score map ↓↓↓
-        # if cfg.PLOT.PLOT_MAP:
-        #     tgt_tensors = samples.tensors
-        #     tgt_tensors = {target['image_id'].item(): output for target, output in zip(targets, tgt_tensors)}
-            
-        #     plot_tgt_map(
-        #         tgt_tensors=tgt_tensors,
-        #         tgt_res=res,
-        #         coco=data_loader.dataset.coco,
-        #         map_save_dir=Path(cfg.OUTPUT_DIR) / 'plot_map',
-        #         img_ids=cfg.PLOT.IMG_IDS,
-        #         prefix=kwargs['prefix']
-        #     )
-        # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
-
         if coco_evaluator is not None:
             coco_evaluator.update(res)
         if coco_evaluators_per_class is not None:
@@ -378,9 +309,10 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, cfg
     stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
     if coco_evaluator is not None:
         if 'bbox' in postprocessors.keys():
+            ratio = 1
             if 'category_ids' in kwargs:
                 ratio = (cfg.DATASET.NUM_CLASSES - 1) / len(cfg.DATASET.CATEGORY_IDS)
-                stats['coco_eval_bbox'] = [v * ratio for v in coco_evaluator.coco_eval['bbox'].stats.tolist()]
+            stats['coco_eval_bbox'] = [v * ratio for v in coco_evaluator.coco_eval['bbox'].stats.tolist()]
             for cat_id, evaluator in coco_evaluators_per_class.items():
                 cat_name = base_ds.cats[cat_id]['name']
                 k = f'coco_eval_bbox_cat-id={cat_id}_cat-name={cat_name}'

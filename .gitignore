@@ -1,8 +1,7 @@
 __pycache__
 datasets/*
 exps/*
-gt_images/*
-gt_cross_images/*
+gt*
 pretrained_weights
 released_weights
 models/ops

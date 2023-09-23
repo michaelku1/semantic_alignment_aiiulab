@@ -26,7 +26,7 @@ import datasets.DAOD as DAOD
 import util.misc as utils
 import datasets.samplers as samplers
 from datasets import build_dataset, get_coco_api_from_dataset
-from engine_cross_domain import evaluate, train_one_epoch
+from engine_cross_domain_mixup import evaluate, train_one_epoch
 from models import build_model
 from config import get_cfg_defaults
 
@@ -122,6 +122,15 @@ def main(cfg):
         data_loader_train = DataLoader(dataset_train, batch_sampler=batch_sampler_train,
                                        collate_fn=DAOD.collate_fn, num_workers=cfg.NUM_WORKERS,
                                        pin_memory=True)
+    if 'mixup' in cfg.DATASET.DA_MODE:
+        assert cfg.TRAIN.BATCH_SIZE % 3 == 0, f'cfg.TRAIN.BATCH_SIZE {cfg.TRAIN.BATCH_SIZE} should be a multiple of 2'
+        batch_sampler_train = torch.utils.data.BatchSampler(
+            sampler_train, cfg.TRAIN.BATCH_SIZE//3, drop_last=True)
+            
+        data_loader_train = DataLoader(dataset_train, batch_sampler=batch_sampler_train,
+                                       collate_fn=DAOD.collate_fn_mixup, num_workers=cfg.NUM_WORKERS,
+                                       pin_memory=True)
+    
     elif 'cross_domain' in cfg.DATASET.DA_MODE:
         assert cfg.TRAIN.BATCH_SIZE % 3 == 0, f'cfg.TRAIN.BATCH_SIZE {cfg.TRAIN.BATCH_SIZE} should be a multiple of 3'
         batch_sampler_train = torch.utils.data.BatchSampler(

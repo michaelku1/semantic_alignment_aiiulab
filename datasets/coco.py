@@ -18,6 +18,7 @@ from pathlib import Path
 
 import torch
 import torch.utils.data
+import torchvision.transforms.functional as F
 from pycocotools import mask as coco_mask
 
 from .torchvision_datasets import CocoDetection as TvCocoDetection
@@ -26,11 +27,12 @@ import datasets.transforms as T
 
 
 class CocoDetection(TvCocoDetection):
-    def __init__(self, img_folder, ann_file, transforms, return_masks, cache_mode=False, local_rank=0, local_size=1):
+    def __init__(self, img_folder, ann_file, transforms, return_masks, cache_mode=False, local_rank=0, local_size=1, to_tensor_first=False):
         super(CocoDetection, self).__init__(img_folder, ann_file,
                                             cache_mode=cache_mode, local_rank=local_rank, local_size=local_size)
         self._transforms = transforms
         self.prepare = ConvertCocoPolysToMask(return_masks)
+        self.to_tensor_first = to_tensor_first
 
     def __getitem__(self, idx):
         """
@@ -42,6 +44,8 @@ class CocoDetection(TvCocoDetection):
         image_id = self.ids[idx]
         target = {'image_id': image_id, 'annotations': target}
         img, target = self.prepare(img, target)
+        if self.to_tensor_first:
+            img = F.to_tensor(img)  # divided by 255
         if self._transforms is not None:
             img, target = self._transforms(img, target)
         return img, target
@@ -164,7 +168,7 @@ def make_coco_transforms(image_set):
             normalize,
         ])
 
-    if image_set == 'val_target_like_source':
+    if image_set == 'val_cross':
         return T.Compose([
             T.RandomResize([800], max_size=1333),
             normalize,

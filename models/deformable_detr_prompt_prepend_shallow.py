@@ -26,7 +26,7 @@ from .backbone import build_backbone
 from .matcher import build_matcher
 from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
-from .deformable_transformer import build_deforamble_transformer
+from .deformable_transformer_prompt_prepend_shallow import build_deforamble_transformer
 from .utils import GradientReversal
 import copy
 
@@ -39,7 +39,10 @@ class DeformableDETR(nn.Module):
     """ This is the Deformable DETR module that performs object detection """
     def __init__(self, backbone, transformer, num_classes, num_queries, num_feature_levels,
                  aux_loss=True, with_box_refine=False, two_stage=False,
-                 backbone_align=False, space_align=False, channel_align=False, instance_align=False):
+                 backbone_align=False, space_align=False, channel_align=False, instance_align=False,
+                 prompt_modules=[], prompt_project=False, deep_prompt=False, deep_shared_prompt=False,
+                 num_prompt_tokens=None, prompt_dropout_rate=0.0, prompt_init_a=-0.1, prompt_init_b=0.1,
+                 prompt_domain_type='same'):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -91,6 +94,17 @@ class DeformableDETR(nn.Module):
         self.space_align = space_align
         self.channel_align = channel_align
         self.instance_align = instance_align
+        self.prompt_modules = prompt_modules
+        self.prompt_project = prompt_project
+        self.deep_prompt = deep_prompt
+        self.deep_shared_prompt = deep_shared_prompt
+        self.num_prompt_tokens = num_prompt_tokens
+        self.prompt_dropout_rate = prompt_dropout_rate
+        self.prompt_init_a = prompt_init_a
+        self.prompt_init_b = prompt_init_b
+        self.prompt_domain_type = prompt_domain_type
+        assert not self.deep_prompt, 'This module is only for shallow'
+        assert self.prompt_modules == ['decoder']
 
         prior_prob = 0.01
         bias_value = -math.log((1 - prior_prob) / prior_prob)
@@ -141,6 +155,31 @@ class DeformableDETR(nn.Module):
                 nn.init.xavier_uniform_(layer.weight, gain=1)
                 nn.init.constant_(layer.bias, 0)
 
+        # initialize visual prompt
+        self.prompt_embeddings = nn.ParameterDict({
+            'src': nn.Parameter(torch.zeros(self.num_prompt_tokens, hidden_dim*2))
+        })
+        nn.init.uniform_(self.prompt_embeddings['src'].data, self.prompt_init_a, self.prompt_init_b)
+
+        if self.prompt_domain_type in ['same', 'inverse']:
+            self.prompt_embeddings['tgt'] = None  # will be assigned later
+        elif self.prompt_domain_type == 'separate':
+            self.prompt_embeddings['tgt'] = copy.deepcopy(self.prompt_embeddings['src'])
+            nn.init.uniform_(self.prompt_embeddings['tgt'].data, self.prompt_init_a, self.prompt_init_b)
+        elif self.prompt_domain_type == 'tgt_only':
+            self.prompt_embeddings['tgt'] = self.prompt_embeddings['src']
+            self.prompt_embeddings['src'] = None
+        else:
+            raise ValueError('Wrong setting of prompt')
+
+        if self.prompt_project:
+            self.prompt_proj = nn.Linear(hidden_dim, hidden_dim)
+            nn.init.kaiming_normal_(self.prompt_proj.weight, a=0, mode='fan_out')
+        else:
+            self.prompt_proj = nn.Identity()
+
+        self.prompt_dropout = nn.Dropout(self.prompt_dropout_rate)
+
     def forward(self, samples: NestedTensor, *args, **kwargs):
         """ The forward expects a NestedTensor, which consists of:
                - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
@@ -184,7 +223,27 @@ class DeformableDETR(nn.Module):
         query_embeds = None
         if not self.two_stage:
             query_embeds = self.query_embed.weight
-        hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output = self.transformer(srcs, masks, pos, query_embeds)
+            # query_embeds:
+            #   (num_queries, hidden_dim*2)
+
+        src_prompt_embeds = self.prompt_embeddings['src']
+        tgt_prompt_embeds = self.prompt_embeddings['tgt']
+        if self.prompt_domain_type == 'same':
+            tgt_prompt_embeds = src_prompt_embeds
+        elif self.prompt_domain_type == 'inverse':
+            tgt_prompt_embeds = -src_prompt_embeds
+        # xxx_prompt_embeds:
+        #   (num_prompt_tokens, hidden_dim*2)
+        #   None
+
+        data_domain_type = kwargs['data_domain_type'] if 'data_domain_type' in kwargs else 'src+tgt'
+        # import pdb; pdb.set_trace()  # check `src_prompt_embeds` & `tgt_prompt_embeds`
+
+        hs, init_reference, inter_references, enc_outputs_class, enc_outputs_coord_unact, da_output = self.transformer(
+            srcs, masks, pos, query_embeds,
+            src_prompt_embeds, tgt_prompt_embeds,
+            data_domain_type, self.prompt_domain_type
+        )
 
         outputs_classes = []
         outputs_coords = []
@@ -207,13 +266,21 @@ class DeformableDETR(nn.Module):
         outputs_class = torch.stack(outputs_classes)
         outputs_coord = torch.stack(outputs_coords)
 
-        out = {'all_pred_logits': outputs_class[-1], 'all_pred_boxes': outputs_coord[-1]}
-        
-        if self.training and self.uda:
+        # if self.training and self.uda:  # original implementation
+        if self.uda:  # compute uda loss even when model is in evaluation
             B = outputs_class.shape[1]
-            end_idx = 2 * B // 3
-            outputs_class = outputs_class[:, :end_idx]
-            outputs_coord = outputs_coord[:, :end_idx]
+
+            # ↓↓↓ original implementation ↓↓↓
+            # outputs_class = outputs_class[:, :B//2]
+            # outputs_coord = outputs_coord[:, :B//2]
+            # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
+
+            # ↓↓↓ new implementation ↓↓↓
+            if data_domain_type == 'src+tgt':
+                outputs_class = outputs_class[:, :B//2]
+                outputs_coord = outputs_coord[:, :B//2]
+            # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
+
             if self.two_stage:
                 enc_outputs_class = enc_outputs_class[:B//2]
                 enc_outputs_coord_unact = enc_outputs_coord_unact[:B//2]
@@ -222,16 +289,11 @@ class DeformableDETR(nn.Module):
             if self.space_align:
                 da_output['space_query'] = self.space_D(da_output['space_query'])
             if self.channel_align:
-                # da_output['channel_query']: (bz * num_feat_levels, num_layers, C)
                 da_output['channel_query'] = self.channel_D(da_output['channel_query'])
-                # da_output['channel_query']: (bz * num_feat_levels, num_layers, 1)
             if self.instance_align:
                 da_output['instance_query'] = self.instance_D(da_output['instance_query'])
 
-        # out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
-        out['pred_logits'] = outputs_class[-1]
-        out['pred_boxes'] = outputs_coord[-1]
-        
+        out = {'pred_logits': outputs_class[-1], 'pred_boxes': outputs_coord[-1]}
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
 
@@ -259,7 +321,7 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
-    def __init__(self, num_classes, matcher, weight_dict, losses, focal_alpha=0.25, da_gamma=2, cross_domain_label=0):
+    def __init__(self, num_classes, matcher, weight_dict, losses, focal_alpha=0.25, da_gamma=2):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -275,7 +337,6 @@ class SetCriterion(nn.Module):
         self.losses = losses
         self.focal_alpha = focal_alpha
         self.da_gamma = da_gamma
-        self.cross_domain_label = cross_domain_label
 
     def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
         """Classification loss (NLL)
@@ -368,15 +429,12 @@ class SetCriterion(nn.Module):
         return losses
 
     def loss_da(self, outputs, use_focal=False):
-        # space_query: (bz, num_layers, 1)
-        # channel_query: (bz * num_feat_levels, num_layers, 1)
-        # instance_query: (bz, 1, 1)
         B = outputs.shape[0]
+        assert B % 2 == 0
 
         targets = torch.empty_like(outputs)
-        targets[:B//3] = 0  # source
-        targets[B//3:2*B//3] = self.cross_domain_label  # cross
-        targets[2*B//3:] = 1  # target
+        targets[:B//2] = 0
+        targets[B//2:] = 1
 
         loss = F.binary_cross_entropy_with_logits(outputs, targets, reduction='none')
 
@@ -420,6 +478,8 @@ class SetCriterion(nn.Module):
 
         # Retrieve the matching between the outputs of the last layer and the targets
         targets = targets[:len(outputs_without_aux['pred_logits'])]
+        # if len(outputs_without_aux['pred_logits']) == 1 when bs == 2, targets are from the both domains
+        # if len(outputs_without_aux['pred_logits']) == 2 when bs == 2, targets are from either source domain or target domain
         indices = self.matcher(outputs_without_aux, targets)
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes
@@ -451,9 +511,26 @@ class SetCriterion(nn.Module):
                     l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
 
+        if 'enc_outputs' in outputs:
+            enc_outputs = outputs['enc_outputs']
+            bin_targets = copy.deepcopy(targets)
+            for bt in bin_targets:
+                bt['labels'] = torch.zeros_like(bt['labels'])
+            indices = self.matcher(enc_outputs, bin_targets)
+            for loss in self.losses:
+                if loss == 'masks':
+                    # Intermediate masks losses are too costly to compute, we ignore them.
+                    continue
+                kwargs = {}
+                if loss == 'labels':
+                    # Logging is enabled only for the last layer
+                    kwargs['log'] = False
+                l_dict = self.get_loss(loss, enc_outputs, bin_targets, indices, num_boxes, **kwargs)
+                l_dict = {k + f'_enc': v for k, v in l_dict.items()}
+                losses.update(l_dict)
+
         if 'da_output' in outputs:
             for k, v in outputs['da_output'].items():
-                # print(k, v.shape)
                 losses[f'loss_{k}'] = self.loss_da(v, use_focal='query' in k)
 
         return losses
@@ -510,9 +587,15 @@ class MLP(nn.Module):
 
 
 def build(cfg):
-    if not cfg.MODEL.CROSS_DOMAIN.SWITCH:
-        raise ImportError('Wrong import! This module is only for cross domain')
-
+    if not cfg.MODEL.VISUAL_PROMPT.SWITCH:
+        raise ImportError('Wrong import! This module is only for visual prompt')
+    if cfg.MODEL.VISUAL_PROMPT.LOCATION != 'prepend':
+        raise ImportError('Wrong import! This module is only for that visual prompts are prepended')
+    if cfg.MODEL.VISUAL_PROMPT.MODULES != ['decoder']:
+        raise ValueError(f'Wrong key value! The prompt location `prepend` is only for `decoder`, but got {cfg.MODEL.VISUAL_PROMPT.MODULES}')
+    if cfg.MODEL.VISUAL_PROMPT.DOMAIN_TYPE not in ['same', 'separate', 'inverse', 'tgt_only']:
+        raise ValueError(f'Wrong key value! `DOMAIN_TYPE` should be one of "same", "separate", or "inverse", but got {cfg.MODEL.VISUAL_PROMPT.DOMAIN_TYPE}')
+        
     device = torch.device(cfg.DEVICE)
 
     backbone = build_backbone(cfg)
@@ -530,7 +613,16 @@ def build(cfg):
         backbone_align=cfg.MODEL.BACKBONE_ALIGN,
         space_align=cfg.MODEL.SPACE_ALIGN,
         channel_align=cfg.MODEL.CHANNEL_ALIGN,
-        instance_align=cfg.MODEL.INSTANCE_ALIGN
+        instance_align=cfg.MODEL.INSTANCE_ALIGN,
+        prompt_modules=cfg.MODEL.VISUAL_PROMPT.MODULES,
+        prompt_project=cfg.MODEL.VISUAL_PROMPT.PROJECT,
+        deep_prompt=cfg.MODEL.VISUAL_PROMPT.DEEP,
+        deep_shared_prompt=cfg.MODEL.VISUAL_PROMPT.DEEP_SHARED,
+        num_prompt_tokens=cfg.MODEL.VISUAL_PROMPT.NUM_TOKENS,
+        prompt_dropout_rate=cfg.MODEL.VISUAL_PROMPT.DROPOUT_RATE,
+        prompt_init_a=cfg.MODEL.VISUAL_PROMPT.INIT_A,
+        prompt_init_b=cfg.MODEL.VISUAL_PROMPT.INIT_B,
+        prompt_domain_type=cfg.MODEL.VISUAL_PROMPT.DOMAIN_TYPE
     )
     if cfg.MODEL.MASKS:
         model = DETRsegm(model, freeze_detr=(cfg.MODEL.FROZEN_WEIGHTS is not None))
@@ -557,15 +649,7 @@ def build(cfg):
     if cfg.MODEL.MASKS:
         losses += ["masks"]
     # num_classes, matcher, weight_dict, losses, focal_alpha=0.25
-    criterion = SetCriterion(
-        cfg.DATASET.NUM_CLASSES,
-        matcher,
-        weight_dict,
-        losses,
-        focal_alpha=cfg.LOSS.FOCAL_ALPHA,
-        da_gamma=cfg.LOSS.DA_GAMMA,
-        cross_domain_label=cfg.MODEL.CROSS_DOMAIN.CROSS_DOMAIN_LABEL
-    )
+    criterion = SetCriterion(cfg.DATASET.NUM_CLASSES, matcher, weight_dict, losses, focal_alpha=cfg.LOSS.FOCAL_ALPHA, da_gamma=cfg.LOSS.DA_GAMMA)
     criterion.to(device)
     postprocessors = {'bbox': PostProcess()}
     if cfg.MODEL.MASKS:
