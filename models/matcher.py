@@ -97,8 +97,13 @@ class HungarianMatcher(nn.Module):
             indices = [linear_sum_assignment(c[i]) for i, c in enumerate(C.split(sizes, -1))]
             # C.split(sizes, -1): tuple: (bs, #queries, #boxes in batch[0], bs, #queries, #boxes in batch[1], ...)
             # c[i]: (#queries, #boxes in batch[i])
-            # indices: list: [(index_i, index_j) for b in batch[0], (index_i, index_j) for b in batch[1], ...]
-            return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
+            # indices: list: [(array(pred_indices), array(gt_indices)) in batch[0],
+            #                 (array(pred_indices), array(gt_indices)) in batch[1],
+            #                 ...]
+            return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices] 
+            # return: list: [(tensor(pred_indices), tensor(gt_indices)) in batch[0],
+            #                (tensor(pred_indices), tensor(gt_indices)) in batch[1],
+            #                ...]
 
 
 def build_matcher(cfg):
