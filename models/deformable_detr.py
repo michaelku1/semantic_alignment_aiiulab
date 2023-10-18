@@ -435,8 +435,8 @@ class SetCriterion(nn.Module):
 
     def _get_src_permutation_idx(self, indices):
         # permute predictions following indices
-        batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
-        src_idx = torch.cat([src for (src, _) in indices])
+        batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])  # batch indices of the selected prediction
+        src_idx = torch.cat([src for (src, _) in indices])  # all indicess of the selected prediction
         return batch_idx, src_idx
 
     def _get_tgt_permutation_idx(self, indices):
@@ -466,6 +466,9 @@ class SetCriterion(nn.Module):
 
         # Retrieve the matching between the outputs of the last layer and the targets
         indices = self.matcher(outputs_without_aux, targets)
+        # list: [(tensor(pred_indices), tensor(gt_indices)) in batch[0],
+        #        (tensor(pred_indices), tensor(gt_indices)) in batch[1],
+        #        ...]
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes
         num_boxes = sum(len(t["labels"]) for t in targets)
