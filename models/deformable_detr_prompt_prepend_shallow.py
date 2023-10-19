@@ -321,7 +321,7 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth boxes and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
-    def __init__(self, num_classes, matcher, weight_dict, losses, focal_alpha=0.25, da_gamma=2):
+    def __init__(self, num_classes, matcher, weight_dict, losses, focal_alpha=0.25, da_gamma=2, drop_num_low_conf=0):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -337,6 +337,8 @@ class SetCriterion(nn.Module):
         self.losses = losses
         self.focal_alpha = focal_alpha
         self.da_gamma = da_gamma
+
+        self.drop_num_low_conf = drop_num_low_conf
 
     def loss_labels(self, outputs, targets, indices, num_boxes, log=True):
         """Classification loss (NLL)
@@ -356,12 +358,34 @@ class SetCriterion(nn.Module):
         target_classes_onehot.scatter_(2, target_classes.unsqueeze(-1), 1)
 
         target_classes_onehot = target_classes_onehot[:,:,:-1]
+
+        if self.drop_num_low_conf > 0:
+            src_probs_sum = src_logits.sigmoid().sum(-1)
+            _, sorted_indices = src_probs_sum.sort(-1, descending=True)
+
+            # ref: https://discuss.pytorch.org/t/how-to-sort-tensor-by-given-order/61625/6
+            src_logits = src_logits[
+                torch.arange(src_logits.shape[0]).unsqueeze(1).repeat((1, self.drop_num_low_conf)),
+                sorted_indices[:, :self.drop_num_low_conf],
+                :
+            ]
+            target_classes_onehot = target_classes_onehot[
+                torch.arange(src_logits.shape[0]).unsqueeze(1).repeat((1, self.drop_num_low_conf)),
+                sorted_indices[:, :self.drop_num_low_conf],
+                :
+            ]
+
         loss_ce = sigmoid_focal_loss(src_logits, target_classes_onehot, num_boxes, alpha=self.focal_alpha, gamma=2) * src_logits.shape[1]
         losses = {'loss_ce': loss_ce}
+        losses['query_idx_class_label_pairs'] = [(I, t['labels'][J]) for t, (I, J) in zip(targets, indices)]
 
         if log:
-            # TODO this should probably be a separate loss, not hacked in this one here
-            losses['class_error'] = 100 - accuracy(src_logits[idx], target_classes_o)[0]
+            if self.drop_num_low_conf > 0:
+                losses['class_error'] = -1
+            else:
+                # TODO this should probably be a separate loss, not hacked in this one here
+                losses['class_error'] = 100 - accuracy(src_logits[idx], target_classes_o)[0]
+        
         return losses
 
     @torch.no_grad()
@@ -385,6 +409,8 @@ class SetCriterion(nn.Module):
         """
         assert 'pred_boxes' in outputs
         idx = self._get_src_permutation_idx(indices)
+        # (batch indices of the selected prediction,
+        #  all indicess of the selected prediction)
         src_boxes = outputs['pred_boxes'][idx]
         target_boxes = torch.cat([t['boxes'][i] for t, (_, i) in zip(targets, indices)], dim=0)
 
@@ -481,6 +507,9 @@ class SetCriterion(nn.Module):
         # if len(outputs_without_aux['pred_logits']) == 1 when bs == 2, targets are from the both domains
         # if len(outputs_without_aux['pred_logits']) == 2 when bs == 2, targets are from either source domain or target domain
         indices = self.matcher(outputs_without_aux, targets)
+        # list: [(tensor(pred_indices), tensor(gt_indices)) in batch[0],
+        #        (tensor(pred_indices), tensor(gt_indices)) in batch[1],
+        #        ...]
 
         # Compute the average number of target boxes accross all nodes, for normalization purposes
         num_boxes = sum(len(t["labels"]) for t in targets)
@@ -498,7 +527,7 @@ class SetCriterion(nn.Module):
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if 'aux_outputs' in outputs:
             for i, aux_outputs in enumerate(outputs['aux_outputs']):
-                indices = self.matcher(aux_outputs, targets)
+                indices = self.matcher(aux_outputs, targets[:len(aux_outputs['pred_logits'])])
                 for loss in self.losses:
                     if loss == 'masks':
                         # Intermediate masks losses are too costly to compute, we ignore them.
@@ -649,7 +678,7 @@ def build(cfg):
     if cfg.MODEL.MASKS:
         losses += ["masks"]
     # num_classes, matcher, weight_dict, losses, focal_alpha=0.25
-    criterion = SetCriterion(cfg.DATASET.NUM_CLASSES, matcher, weight_dict, losses, focal_alpha=cfg.LOSS.FOCAL_ALPHA, da_gamma=cfg.LOSS.DA_GAMMA)
+    criterion = SetCriterion(cfg.DATASET.NUM_CLASSES, matcher, weight_dict, losses, focal_alpha=cfg.LOSS.FOCAL_ALPHA, da_gamma=cfg.LOSS.DA_GAMMA, drop_num_low_conf=cfg.MODEL.VISUAL_PROMPT.DROP_NUM_LOW_CONF)
     criterion.to(device)
     postprocessors = {'bbox': PostProcess()}
     if cfg.MODEL.MASKS:

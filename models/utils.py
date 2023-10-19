@@ -758,12 +758,14 @@ def prepend_prompts(tokens, src_prompt_tokens=None, tgt_prompt_tokens=None, data
     prompt_tokens = None
     num_prompt_tokens = 0
     if data_domain_type == 'src_only':
-        assert src_prompt_tokens is not None
+        if src_prompt_tokens is None:
+            return tokens
         num_prompt_tokens = src_prompt_tokens.shape[0]
         prompt_tokens = src_prompt_tokens.unsqueeze(0).expand(N, -1, -1)
 
     elif data_domain_type == 'tgt_only':
-        assert tgt_prompt_tokens is not None
+        if tgt_prompt_tokens is None:
+            return tokens
         num_prompt_tokens = tgt_prompt_tokens.shape[0]
         prompt_tokens = tgt_prompt_tokens.unsqueeze(0).expand(N, -1, -1)
         

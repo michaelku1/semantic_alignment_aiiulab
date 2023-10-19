@@ -374,13 +374,13 @@ def main(cfg):
             print('Start evaluation before fine tuning')
             if dataset_val_src is not None:
                 print('=== Source Domain ===')
-                test_src_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
+                test_src_stats, coco_evaluator, src_query_idx_to_class_labels = evaluate(model, criterion, postprocessors,
                                                           data_loader_val_src, base_ds_src, device, cfg, prefix='init_eval_tgt')
             else:
                 test_src_stats = {}
 
             print('=== Target Domain ===')
-            test_tgt_stats, coco_evaluator = evaluate(model, criterion, postprocessors,
+            test_tgt_stats, coco_evaluator, tgt_query_idx_to_class_labels = evaluate(model, criterion, postprocessors,
                                                       data_loader_val_tgt, base_ds_tgt, device, cfg,
                                                       category_ids=cfg.DATASET.CATEGORY_IDS,  # for bdd
                                                       prefix='init_eval_tgt')
@@ -395,6 +395,11 @@ def main(cfg):
             if cfg.OUTPUT_DIR and utils.is_main_process():
                 with (output_dir / "log.txt").open("a") as f:
                     f.write(json.dumps(log_stats) + "\n")
+
+                save_dir = Path(output_dir / 'query_idx_to_class_labels')
+                save_dir.mkdir(exist_ok=True, parents=True)
+                torch.save(src_query_idx_to_class_labels, str(save_dir / 'src_epoch=-1.pt'))
+                torch.save(tgt_query_idx_to_class_labels, str(save_dir / 'tgt_epoch=-1.pt'))
 
     # start a new training with random initialized weights
     else:
@@ -459,12 +464,12 @@ def main(cfg):
         test_src_stats = {}
         if dataset_val_src is not None:
             print('=== Source Domain ===')
-            test_src_stats, coco_evaluator = evaluate(
+            test_src_stats, coco_evaluator, src_query_idx_to_class_labels = evaluate(
                 model, criterion, postprocessors, data_loader_val_src, base_ds_src, device, cfg, prefix=f'eval_src_epoch={epoch}'
             )
             
         print('=== Target Domain ===')
-        test_tgt_stats, coco_evaluator = evaluate(
+        test_tgt_stats, coco_evaluator, tgt_query_idx_to_class_labels = evaluate(
             model, criterion, postprocessors, data_loader_val_tgt, base_ds_tgt, device, cfg,
             category_ids=cfg.DATASET.CATEGORY_IDS,  # for bdd
             prefix=f'eval_tgt_epoch={epoch}'
@@ -491,6 +496,11 @@ def main(cfg):
                     for name in filenames:
                         torch.save(coco_evaluator.coco_eval["bbox"].eval,
                                    output_dir / "eval" / name)
+
+            save_dir = Path(output_dir / 'query_idx_to_class_labels')
+            save_dir.mkdir(exist_ok=True, parents=True)
+            torch.save(src_query_idx_to_class_labels, str(save_dir / f'src_epoch={epoch}.pt'))
+            torch.save(tgt_query_idx_to_class_labels, str(save_dir / f'tgt_epoch={epoch}.pt'))
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))

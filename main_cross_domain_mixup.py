@@ -424,36 +424,36 @@ def main(cfg):
 
         START_EPOCH = 0
 
-        if not cfg.EVAL:
-            print()
-            print('Start evaluation before fine tuning')
-            test_src_stats = {}
-            if dataset_val_src is not None:
-                print('=== Source Domain ===')
-                test_src_stats, _ = evaluate(model, criterion, postprocessors,
-                                             data_loader_val_src, base_ds_src, device, cfg, prefix='init_eval_src')
-            test_cross_stats = {}
-            if dataset_val_cross is not None:
-                print('=== Cross Domain ===')
-                test_cross_stats, _ = evaluate(model, criterion, postprocessors,
-                                               data_loader_val_cross, base_ds_cross, device, cfg, prefix='init_eval_cross')
-            print('=== Target Domain ===')
-            test_tgt_stats, _ = evaluate(model, criterion, postprocessors,
-                                         data_loader_val_tgt, base_ds_tgt, device, cfg,
-                                         category_ids=cfg.DATASET.CATEGORY_IDS,  # for bdd
-                                         prefix='init_eval_tgt')
+        # if not cfg.EVAL:
+        #     print()
+        #     print('Start evaluation before fine tuning')
+        #     test_src_stats = {}
+        #     if dataset_val_src is not None:
+        #         print('=== Source Domain ===')
+        #         test_src_stats, _ = evaluate(model, criterion, postprocessors,
+        #                                      data_loader_val_src, base_ds_src, device, cfg, prefix='init_eval_src')
+        #     test_cross_stats = {}
+        #     if dataset_val_cross is not None:
+        #         print('=== Cross Domain ===')
+        #         test_cross_stats, _ = evaluate(model, criterion, postprocessors,
+        #                                        data_loader_val_cross, base_ds_cross, device, cfg, prefix='init_eval_cross')
+        #     print('=== Target Domain ===')
+        #     test_tgt_stats, _ = evaluate(model, criterion, postprocessors,
+        #                                  data_loader_val_tgt, base_ds_tgt, device, cfg,
+        #                                  category_ids=cfg.DATASET.CATEGORY_IDS,  # for bdd
+        #                                  prefix='init_eval_tgt')
             
-            log_stats = {
-                **{f'test_src_{k}': v for k, v in test_src_stats.items()},
-                **{f'test_tgt_{k}': v for k, v in test_tgt_stats.items()},
-                **{f'test_cross_{k}': v for k, v in test_cross_stats.items()},
-                'epoch': 'before fine tuning',
-                'n_parameters': n_parameters
-            }
+        #     log_stats = {
+        #         **{f'test_src_{k}': v for k, v in test_src_stats.items()},
+        #         **{f'test_tgt_{k}': v for k, v in test_tgt_stats.items()},
+        #         **{f'test_cross_{k}': v for k, v in test_cross_stats.items()},
+        #         'epoch': 'before fine tuning',
+        #         'n_parameters': n_parameters
+        #     }
                         
-            if cfg.OUTPUT_DIR and utils.is_main_process():
-                with (output_dir / "log.txt").open("a") as f:
-                    f.write(json.dumps(log_stats) + "\n")
+        #     if cfg.OUTPUT_DIR and utils.is_main_process():
+        #         with (output_dir / "log.txt").open("a") as f:
+        #             f.write(json.dumps(log_stats) + "\n")
 
     # start a new training with random initialized weights
     else:

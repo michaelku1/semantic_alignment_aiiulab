@@ -112,9 +112,64 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
 
         # DEBUG for nan grad
         # with torch.autograd.detect_anomaly():
-        outputs = model(samples, data_domain_type=data_domain_type)
-        loss_dict = criterion(outputs, targets)
-        weight_dict = criterion.weight_dict
+        if cfg.MODEL.VISUAL_PROMPT.SWITCH and cfg.MODEL.VISUAL_PROMPT.DOMAIN_TYPE == 'tgt_only':
+            assert samples.tensors.shape[0] % 2 == 0, samples.tensors.shape
+            bs = samples.tensors.shape[0]
+            src_samples = utils.nested_tensor_from_tensor_list(samples.tensors[:bs//2])
+            src_targets = targets[:bs//2]
+            tgt_samples = utils.nested_tensor_from_tensor_list(samples.tensors[bs//2:])
+            tgt_targets = targets[bs//2:]
+
+            src_outputs = model(src_samples, data_domain_type='src_only')
+            tgt_outputs = model(tgt_samples, data_domain_type='tgt_only')
+
+            if cfg.MODEL.VISUAL_PROMPT.DROP_PROMPT_OUTPUTS:
+                outputs = {}
+
+                tgt_outputs['pred_logits'] = tgt_outputs['pred_logits'][:, :cfg.MODEL.NUM_QUERIES, :]
+                outputs['pred_logits'] = torch.cat([
+                    src_outputs['pred_logits'],
+                    tgt_outputs['pred_logits']
+                    ], dim=0)
+
+                tgt_outputs['pred_boxes'] = tgt_outputs['pred_boxes'][:, :cfg.MODEL.NUM_QUERIES, :]
+                outputs['pred_boxes'] = torch.cat([
+                    src_outputs['pred_boxes'],
+                    tgt_outputs['pred_boxes']
+                    ], dim=0)
+
+                outputs['aux_outputs'] = src_outputs['aux_outputs']
+                # outputs['aux_outputs'][0]['pred_logits']: (1, 300, 9)
+                # outputs['aux_outputs'][0]['pred_boxes']: (1, 300, 9)
+
+                outputs['da_output'] = {}
+                for x_query in tgt_outputs['da_output'].keys():
+                    outputs['da_output'][x_query] = torch.cat([
+                        src_outputs['da_output'][x_query],
+                        tgt_outputs['da_output'][x_query]
+                    ])                
+            else:
+                raise NotImplementedError()
+
+            loss_dict = criterion(outputs, targets)
+            weight_dict = criterion.weight_dict
+        else:
+            outputs = model(samples, data_domain_type=data_domain_type)
+            # outputs['aux_outputs'][0]['pred_logits']: (1, #queries, 9)
+            # outputs['aux_outputs'][0]['pred_boxes']: (1, #queries, 9)
+
+            if cfg.MODEL.VISUAL_PROMPT.DROP_PROMPT_OUTPUTS:
+                outputs['pred_logits'] = outputs['pred_logits'][:, :cfg.MODEL.NUM_QUERIES, :]
+                outputs['pred_boxes'] = outputs['pred_boxes'][:, :cfg.MODEL.NUM_QUERIES, :]
+                for i in range(len(outputs['aux_outputs'])):
+                    outputs['aux_outputs'][i]['pred_logits'] = outputs['aux_outputs'][i]['pred_logits'][:, :cfg.MODEL.NUM_QUERIES, :]
+                    outputs['aux_outputs'][i]['pred_boxes'] = outputs['aux_outputs'][i]['pred_boxes'][:, :cfg.MODEL.NUM_QUERIES, :]
+
+            loss_dict = criterion(outputs, targets)
+            weight_dict = criterion.weight_dict
+
+        keys = [k for k in loss_dict.keys() if 'query_idx_class_label_pairs' in k]
+        [loss_dict.pop(k) for k in keys]
 
         # the loss used for optimization
         losses = sum(loss_dict[k] * weight_dict[k] for k in loss_dict.keys() if k in weight_dict)
@@ -174,45 +229,45 @@ def train_one_epoch(model: torch.nn.Module, criterion: torch.nn.Module,
             metric_logger.update(lr=optimizer.param_groups[0]['lr'])
 
         # ↓↓↓ plot pseudo boxes ↓↓↓
-        if cfg.PLOT.PLOT_BBOX and 'tgt_pred_logits' in outputs:
-            B = len(targets)
-            tgt_tensors = samples.tensors[B//2:]
-            tgt_targets = targets[B//2:]
-            tgt_outputs = {
-                'pred_logits': outputs['tgt_pred_logits'],
-                'pred_boxes': outputs['tgt_pred_boxes']
-            }
-            orig_tgt_target_sizes = torch.stack([t["size"] for t in tgt_targets], dim=0)
-            results = postprocessors['bbox'](tgt_outputs, orig_tgt_target_sizes)
-            res = {target['image_id'].item(): output for target, output in zip(tgt_targets, results)}
-            img_tensors = {target['image_id'].item(): output for target, output in zip(tgt_targets, tgt_tensors)}
+        # if cfg.PLOT.PLOT_BBOX and 'tgt_pred_logits' in outputs:
+        #     B = len(targets)
+        #     tgt_tensors = samples.tensors[B//2:]
+        #     tgt_targets = targets[B//2:]
+        #     tgt_outputs = {
+        #         'pred_logits': outputs['tgt_pred_logits'],
+        #         'pred_boxes': outputs['tgt_pred_boxes']
+        #     }
+        #     orig_tgt_target_sizes = torch.stack([t["size"] for t in tgt_targets], dim=0)
+        #     results = postprocessors['bbox'](tgt_outputs, orig_tgt_target_sizes)
+        #     res = {target['image_id'].item(): output for target, output in zip(tgt_targets, results)}
+        #     img_tensors = {target['image_id'].item(): output for target, output in zip(tgt_targets, tgt_tensors)}
             
-            plot_bbox(
-                img_tensors=img_tensors,
-                res=res,
-                coco=data_loader.dataset.target.coco,
-                box_save_dir=Path(cfg.OUTPUT_DIR) / 'plot_bbox',
-                score_threshold=cfg.PLOT.SCORE_THRESHOLD,
-                img_ids=cfg.PLOT.IMG_IDS,
-                prefix=kwargs['prefix']
-            )
+        #     plot_bbox(
+        #         img_tensors=img_tensors,
+        #         res=res,
+        #         coco=data_loader.dataset.target.coco,
+        #         box_save_dir=Path(cfg.OUTPUT_DIR) / 'plot_bbox',
+        #         score_threshold=cfg.PLOT.SCORE_THRESHOLD,
+        #         img_ids=cfg.PLOT.IMG_IDS,
+        #         prefix=kwargs['prefix']
+        #     )
         # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
 
         # ↓↓↓ plot proposal score map ↓↓↓
-        if cfg.PLOT.PLOT_MAP and 'tgt_map_out' in outputs:
-            B = len(targets)
-            tgt_targets = targets[B//2:]
-            tgt_tensors = samples.tensors[B//2:]
-            tgt_tensors = {target['image_id'].item(): output for target, output in zip(tgt_targets, tgt_tensors)}
+        # if cfg.PLOT.PLOT_MAP and 'tgt_map_out' in outputs:
+        #     B = len(targets)
+        #     tgt_targets = targets[B//2:]
+        #     tgt_tensors = samples.tensors[B//2:]
+        #     tgt_tensors = {target['image_id'].item(): output for target, output in zip(tgt_targets, tgt_tensors)}
 
-            plot_tgt_map(
-                tgt_tensors=tgt_tensors,
-                tgt_res=outputs['tgt_map_out'],
-                coco=data_loader.dataset.target.coco,
-                map_save_dir=Path(cfg.OUTPUT_DIR) / 'plot_map',
-                img_ids=cfg.PLOT.IMG_IDS,
-                prefix=kwargs['prefix']
-            )
+        #     plot_tgt_map(
+        #         tgt_tensors=tgt_tensors,
+        #         tgt_res=outputs['tgt_map_out'],
+        #         coco=data_loader.dataset.target.coco,
+        #         map_save_dir=Path(cfg.OUTPUT_DIR) / 'plot_map',
+        #         img_ids=cfg.PLOT.IMG_IDS,
+        #         prefix=kwargs['prefix']
+        #     )
         # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
 
         samples, targets = prefetcher.next()
@@ -262,6 +317,8 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, cfg
 
     data_domain_type = getattr(data_loader.dataset, 'data_domain_type', 'src+tgt')
 
+    i = 0
+    all_query_idx_class_label_pairs = []
     for samples, targets in metric_logger.log_every(data_loader, 10, header):
         samples = samples.to(device)
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
@@ -269,6 +326,11 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, cfg
         outputs = model(samples, data_domain_type=data_domain_type)
         loss_dict = criterion(outputs, targets)
         weight_dict = criterion.weight_dict
+
+        all_query_idx_class_label_pairs.extend(loss_dict.pop('query_idx_class_label_pairs'))
+        keys = [k for k in loss_dict.keys() if 'query_idx_class_label_pairs_' in k]
+        for k in keys:
+            loss_dict.pop(k)
 
         # reduce losses over all GPUs for logging purposes
         loss_dict_reduced = utils.reduce_dict(loss_dict)
@@ -302,16 +364,49 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, cfg
             tgt_tensors = samples.tensors
             img_tensors = {target['image_id'].item(): output for target, output in zip(targets, tgt_tensors)}
 
+            outputs_without_prompts = {
+                'pred_logits': outputs['pred_logits'][:, :cfg.MODEL.NUM_QUERIES, :],
+                'pred_boxes': outputs['pred_boxes'][:, :cfg.MODEL.NUM_QUERIES, :]
+            }
+            print(f"find {outputs_without_prompts['pred_logits'].shape[1]} object queries")
+
             # images are all resized to 800, so we can't use `orig_size` to rescale bboxes
             # use `size` instead
             target_sizes = torch.stack([t["size"] for t in targets], dim=0)
-            _results = postprocessors['bbox'](outputs, target_sizes)
+            _results = postprocessors['bbox'](outputs_without_prompts, target_sizes)  # [{'scores': s, 'labels': l, 'boxes': b}, ...]
             _res = {target['image_id'].item(): output for target, output in zip(targets, _results)}
             plot_bbox(
                 img_tensors=img_tensors,
                 res=_res,
                 coco=data_loader.dataset.coco,
                 save_dir=Path(cfg.OUTPUT_DIR) / 'plot_bbox',
+                score_threshold=cfg.PLOT.SCORE_THRESHOLD,
+                img_ids=cfg.PLOT.IMG_IDS,
+                prefix=kwargs['prefix']
+            )
+        # ↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑↑
+
+        # ↓↓↓ plot pseudo boxes predicted by prompts ↓↓↓
+        if cfg.PLOT.PLOT_PROMPT_BBOX:
+            tgt_tensors = samples.tensors
+            img_tensors = {target['image_id'].item(): output for target, output in zip(targets, tgt_tensors)}
+
+            outputs_with_prompts = {
+                'pred_logits': outputs['pred_logits'][:, cfg.MODEL.NUM_QUERIES:, :],
+                'pred_boxes': outputs['pred_boxes'][:, cfg.MODEL.NUM_QUERIES:, :]
+            }
+            print(f"find {outputs_without_prompts['pred_logits'].shape[1]} prompts")
+
+            # images are all resized to 800, so we can't use `orig_size` to rescale bboxes
+            # use `size` instead
+            target_sizes = torch.stack([t["size"] for t in targets], dim=0)
+            _results = postprocessors['bbox'](outputs_with_prompts, target_sizes)  # [{'scores': s, 'labels': l, 'boxes': b}, ...]
+            _res = {target['image_id'].item(): output for target, output in zip(targets, _results)}
+            plot_bbox(
+                img_tensors=img_tensors,
+                res=_res,
+                coco=data_loader.dataset.coco,
+                save_dir=Path(cfg.OUTPUT_DIR) / 'plot_prompt_bbox',
                 score_threshold=cfg.PLOT.SCORE_THRESHOLD,
                 img_ids=cfg.PLOT.IMG_IDS,
                 prefix=kwargs['prefix']
@@ -348,6 +443,10 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, cfg
                 res_pano[i]["file_name"] = file_name
 
             panoptic_evaluator.update(res_pano)
+
+        # i += 1
+        # if i == 5:
+        #     break
 
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
@@ -391,4 +490,14 @@ def evaluate(model, criterion, postprocessors, data_loader, base_ds, device, cfg
         stats['PQ_all'] = panoptic_res["All"]
         stats['PQ_th'] = panoptic_res["Things"]
         stats['PQ_st'] = panoptic_res["Stuff"]
-    return stats, coco_evaluator
+
+    query_idx_to_class_labels = {}
+    for query_indices, cat_ids in all_query_idx_class_label_pairs:
+        for query_idx, cat_id in zip(query_indices, cat_ids):
+            query_idx, cat_id = query_idx.item(), cat_id.item()
+            if query_idx not in query_idx_to_class_labels:
+                query_idx_to_class_labels[query_idx] = [cat_id]
+            else:
+                query_idx_to_class_labels[query_idx].append(cat_id)
+
+    return stats, coco_evaluator, query_idx_to_class_labels

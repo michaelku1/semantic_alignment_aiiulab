@@ -32,8 +32,6 @@ def plot_map(
     tgt_coco_eval, tgt_max_mAP, tgt_max_epoch, tgt_class_coco_evals, class_max_mAPs = get_coco_eval_results(df_log, domain='target', from_class_map=from_class_map, category_ids=category_ids, iou_type=iou_type)
     cross_coco_eval, cross_max_mAP, cross_max_epoch, cross_class_coco_evals, _ = get_coco_eval_results(df_log, domain='cross', from_class_map=from_class_map, category_ids=category_ids, iou_type=iou_type)
     
-    import pdb; pdb.set_trace()
-    
     if src_coco_eval is None and src_class_coco_evals:
         src_coco_eval = np.zeros(len(src_class_coco_evals[(1, 'person')]))
         for src_class_coco_eval in src_class_coco_evals.values():

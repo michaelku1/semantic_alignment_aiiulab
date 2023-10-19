@@ -186,7 +186,7 @@ def plot_bbox(
                 continue
 
             label_name = coco.cats[label.item()]['name']
-            title = f'({score.item():.3f})'
+            title = f'{score.item():.3f}'
             label_count[label.item()] += 1
 
             x1, y1, x2, y2 = np.round(box.cpu().numpy()).astype(np.int64)
@@ -277,7 +277,6 @@ def plot_gt_bbox_from_dataset(dataset, img_ids, prefix, output_dir):
                 continue
 
         num_img_ids -= 1
-
         for img_tensor, target, coco in zip(imgs, targets, cocos):
             if img_tensor is None:
                 continue
@@ -290,11 +289,25 @@ def plot_gt_bbox_from_dataset(dataset, img_ids, prefix, output_dir):
             boxes = boxes * scale_fct[None, :]
 
             labels = target['labels']
+            label_count = {i: 0 for i in range(1, 9)}
             
             for box, label in zip(boxes, labels):
+                label_count[label.item()] += 1
                 color = colors[label.item()]
                 x1, y1, x2, y2 = np.round(box.cpu().numpy()).astype(np.int64)
                 cv2.rectangle(img, (x1, y1), (x2, y2), color, 1)
+
+            x, y = 20, 20
+            fontScale = 0.5
+            thickness = 1
+            for label, count in label_count.items():
+                label_name = coco.cats[label]['name']
+                msg = f'# {label_name}: {count}'
+                color = (0, 0, 0) if label_name == 'car' else (255, 255, 255)
+                cv2.rectangle(img, (x, y + 5), (x + 200, y - 11), colors[label], cv2.FILLED)  # text background
+                cv2.putText(img, msg, (x, y), cv2.FONT_HERSHEY_COMPLEX, fontScale, color, thickness)
+
+                y += 11 + 5
 
             file_name = coco.loadImgs(ids=[img_id])[0]['file_name']  # xxx.png
             file_name = Path(file_name).name

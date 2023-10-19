@@ -653,7 +653,7 @@ def build(image_set, cfg):
                 local_size=get_local_size()
             )
         elif cfg.DATASET.DA_MODE == 'uda':
-            dataset = DADataset(
+            return DADataset(
                 source_img_folder=paths[source_domain]['train_img'],
                 source_ann_file=paths[source_domain]['train_anno'],
                 target_img_folder=paths[target_domain]['train_img'],
@@ -664,7 +664,6 @@ def build(image_set, cfg):
                 local_rank=get_local_rank(),
                 local_size=get_local_size()
             )
-            dataset[0]
 
         elif cfg.DATASET.DA_MODE == 'uda_cyclegan_paired_target':
             dataset = DADataset(
