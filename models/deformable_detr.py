@@ -331,19 +331,19 @@ class SetCriterion(nn.Module):
         targets dicts must contain the key "labels" containing a tensor of dim [nb_target_boxes]
         """
         assert 'pred_logits' in outputs
-        src_logits = outputs['pred_logits']
+        src_logits = outputs['pred_logits']  # (#src_imgs, #queries, #real_classes+1)
 
-        idx = self._get_src_permutation_idx(indices)
-        target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
+        idx = self._get_src_permutation_idx(indices)  # tuple(batch indices, matched_pred_indices)
+        target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])  # (#matched_pred_indices)
         target_classes = torch.full(src_logits.shape[:2], self.num_classes,
-                                    dtype=torch.int64, device=src_logits.device)
+                                    dtype=torch.int64, device=src_logits.device)  # (#src_imgs, #queries)
         target_classes[idx] = target_classes_o
 
         target_classes_onehot = torch.zeros([src_logits.shape[0], src_logits.shape[1], src_logits.shape[2] + 1],
-                                            dtype=src_logits.dtype, layout=src_logits.layout, device=src_logits.device)
-        target_classes_onehot.scatter_(2, target_classes.unsqueeze(-1), 1)
+                                            dtype=src_logits.dtype, layout=src_logits.layout, device=src_logits.device)  # (#src_imgs, #queries, #real_classes+2)
+        target_classes_onehot.scatter_(2, target_classes.unsqueeze(-1), 1)  # (#src_imgs, #queries, #real_classes+2)
 
-        target_classes_onehot = target_classes_onehot[:, :, :-1]
+        target_classes_onehot = target_classes_onehot[:, :, :-1]  # (#src_imgs, #queries, #real_classes+1)
         loss_ce = sigmoid_focal_loss(src_logits, target_classes_onehot, num_boxes, alpha=self.focal_alpha, gamma=2) * src_logits.shape[1]
         losses = {'loss_ce': loss_ce}
 
