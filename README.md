@@ -1,4 +1,4 @@
-# BlenDA: Domain Adaptive Object Detection through Diffusion Blending
+# BlenDA: Domain Adaptive Object Detection through Diffusion Blending (ICASSP 2024 Accepted)
 
 ![teaser_a](https://github.com/michaelku1/semantic_alignment_aiiulab/assets/48415065/20c1c4cb-e20c-4b55-aa8e-c4a876800b20)
 
